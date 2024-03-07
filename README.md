@@ -3,7 +3,7 @@ VMWare Reporter
 
 Extract data easily from your VMWare clusters.
 
-See [full documentation](https://vmware-reporter.readthedocs.io/) and [API reference](https://vmware-reporter.readthedocs.io/en/latest/api-reference.html) on _Read the Docs_.
+See [git repository](https://github.com/ipamo/vmware-reporter) on _GitHub_ and [full documentation](https://vmware-reporter.readthedocs.io/) (including [API reference](https://vmware-reporter.readthedocs.io/en/latest/api-reference.html)) on _Read the Docs_.
 
 [![Documentation Status](https://readthedocs.org/projects/vmware-reporter/badge/?version=latest)](https://vmware-reporter.readthedocs.io/en/latest/?badge=latest)
 
