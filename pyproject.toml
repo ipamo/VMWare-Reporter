@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=61.2.0", "setuptools_scm[toml]>=3.4.3"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vmware-reporter"
+authors = [{ name="Sébastien Hocquet", email="seb@ipamo.net" }]
+description = "Extract data easily from your VMWare clusters."
+readme = "README.md"
+keywords = ["vmware", "vsphere", "vm", "reporter"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Environment :: Console",
+    "Topic :: Software Development :: Libraries",
+]
+requires-python = ">=3.8" # we use assignment expressions and typing.Literal
+scripts = { vmware-reporter = "vmware_reporter.__main__:main" }
+dynamic = ["version", "dependencies"]
+
+[project.urls]
+Homepage = "https://github.com/ipamo/vmware-reporter"
+"Bug Tracker" = "https://github.com/ipamo/vmware-reporter/issues"
+
+[tool.setuptools]
+packages = ["vmware_reporter"]
+
+[tool.setuptools_scm]
+write_to = "vmware_reporter/_version.py"
+
+[tool.setuptools.dynamic.dependencies]
+file = ['requirements.txt']
