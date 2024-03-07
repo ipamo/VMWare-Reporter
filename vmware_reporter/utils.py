@@ -591,55 +591,49 @@ def get_help_text(docstring: str):
 
 
 #region Config
+    
+EMBEDDED_APPDATA = Path(__file__).resolve().parent.joinpath('appdata')
+SYSTEM_APPDATA = Path(os.environ.get('ProgramData', 'C:\\ProgramData' if sys.platform == 'win32' else '/etc')).joinpath(__prog__)
+USER_APPDATA = Path(os.environ.get('LOCALAPPDATA', '~\\AppData\Local' if sys.platform == 'win32' else '~/.config')).joinpath(__prog__)
+LOCAL_APPDATA = Path.cwd().joinpath('data')
 
-_config_paths: list[os.PathLike] = None
 _config: ConfigParser = None
+
+def get_appdata_paths(name: str = ''):
+    possible_paths = [
+        # Embedded configuration
+        EMBEDDED_APPDATA.joinpath(name),
+        # System configuration
+        SYSTEM_APPDATA.joinpath(name),
+        # User configuration
+        USER_APPDATA.joinpath(name),
+        # Local configuration
+        LOCAL_APPDATA.joinpath(name),
+    ]
+
+    paths = []
+    for path in possible_paths:
+        if path.exists():
+            paths.append(path)
+
+    return paths
 
 def get_config():
     global _config
 
     if _config is None:
         _config = ConfigParser()
-        paths = _config_paths
-        if not paths:
-            system_appdata = Path(os.environ.get('ProgramData', 'C:\\ProgramData' if sys.platform == 'win32' else '/etc'))
-            user_appdata = Path(os.environ.get('LOCALAPPDATA', '~\\AppData\Local' if sys.platform == 'win32' else '~/.config'))
 
-            paths = [
-                # System configuration
-                system_appdata.joinpath(__prog__, f'{__prog__}.conf'),
-                system_appdata.joinpath(f'{__prog__}.conf'),
-                # User configuration
-                user_appdata.joinpath(__prog__, f'{__prog__}.conf'),
-                user_appdata.joinpath(f'{__prog__}.conf'),
-                # Local configuration
-                f'{__prog__}.conf',
-                'local.conf',
-            ]
+        paths = get_appdata_paths(f'{__prog__}.conf')
+        if paths:
+            for path in paths:
+                logger.debug("Config file: %s", path)
+            _config.read(paths)
 
-        found = False
-        for path in paths:
-            if not isinstance(path, Path):
-                path = Path(path)
-            if path.exists():
-                found = True
-                logger.debug("Use config file: %s", path)
-
-        if not found:
+        else:
             logger.warning("No config file found")
 
-        _config.read(paths)
-
     return _config
-
-
-def set_config_path(*paths: os.PathLike):
-    global _config_paths
-
-    if _config:
-        raise ValueError("Configuration already loaded")
-
-    _config_paths = paths
 
 #endregion
 
