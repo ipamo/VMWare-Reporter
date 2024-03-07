@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import atexit
-import errno
 import json
 import logging
 import logging.config
@@ -756,6 +755,6 @@ class ExitHandler(logging.Handler):
                 
                 # Change exit code if it was not originally set explicitely to another value, using `sys.exit()`
                 if cls._detected_exit_code == 0:
-                    os._exit(errno.EADV) # EADV (Advertise error) = 68
+                    os._exit(68) # EADV (Advertise error) = 68
 
 #endregion
