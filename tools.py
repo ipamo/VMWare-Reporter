@@ -11,7 +11,9 @@ import subprocess
 import sys
 from argparse import ArgumentParser
 from pathlib import Path
-from vmware_reporter import __prog__
+from typing import Callable
+
+PUBLISH_PATTERN = re.compile(r'^vmware_reporter\-\d+\.\d+\.\d+((a|b)\d+)?+-py3-none-any.whl$')
 
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -20,35 +22,31 @@ def main():
     subparsers = parser.add_subparsers()
 
     for command in _commands:
-        name = command.handle.__name__
+        name = command.__name__
         cmdparser = subparsers.add_parser(name)
-        cmdparser.set_defaults(handle=command.handle)
-        if command.add_arguments:
-            command.add_arguments(cmdparser)
+        cmdparser.set_defaults(handle=command)
+        if add_arguments := getattr(command, 'add_arguments', None):
+            add_arguments(cmdparser)
 
     args = vars(parser.parse_args())
     handle = args.pop('handle', build)
     handle(**args)
 
 
-class Command:
-    def __init__(self, handle, *, add_arguments=None):
-        self.handle = handle
-        self.add_arguments = add_arguments
+_commands: list[Callable] = []
 
-_commands: list[Command] = []
-
-def command(handle = None, *, add_arguments = None):
+def command(handle = None):
     if handle is None: # used as a decorator with arguments
         def decorator(handle):
-            command(handle, add_arguments=add_arguments)
+            command(handle)
             return handle
         return decorator
     
-    _commands.append(Command(handle, add_arguments=add_arguments))
+    _commands.append(handle)
     return handle
 
 
+# -----------------------------------------------------------------------------
 @command
 def build():
     clean()
@@ -57,6 +55,7 @@ def build():
     wheel()
 
 
+# -----------------------------------------------------------------------------
 @command
 def clean(path: Path = None):
     if path is None:
@@ -78,22 +77,22 @@ def clean(path: Path = None):
         pass
 
 
+# -----------------------------------------------------------------------------
 @command
 def test():    
     print(f"{Color.YELLOW}Test{Color.RESET}")
     _run('python -m unittest')
 
 
+# -----------------------------------------------------------------------------
 @command
 def wheel():
     print(f"{Color.YELLOW}Wheel{Color.RESET}")
     _run('pip wheel --no-deps -w dist .')
 
 
-def docs_add_arguments(parser: ArgumentParser):
-    parser.add_argument('--serve', action='store_true')
-
-@command(add_arguments=docs_add_arguments)
+# -----------------------------------------------------------------------------
+@command
 def docs(serve=False):
     _ensure_installed('sphinx')
     _ensure_installed('sphinx_rtd_theme')
@@ -108,29 +107,51 @@ def docs(serve=False):
     else:
         print(f"{Color.CYAN}TIP{Color.RESET}: serve docs with: {Color.CYAN}python -m http.server -b 127.0.0.1 -d docs/build 8001{Color.RESET} (or pass option {Color.CYAN}--serve{Color.RESET} to docs command)")
 
+def add_arguments(parser: ArgumentParser):
+    parser.add_argument('--serve', action='store_true')
 
-def publish_add_arguments(parser: ArgumentParser):
-    parser.add_argument('path')
+docs.add_arguments = add_arguments
 
-@command(add_arguments=publish_add_arguments)
-def publish(path: str|Path):
+
+# -----------------------------------------------------------------------------
+@command
+def publish(path: str|Path, proxy: str = None):
     if not isinstance(path, Path):
         path = Path(path)
     
-    if not re.match(r'^' + re.escape(__prog__) + r'-\d+\.\d+\.\d+((a|b)\d+)?+-py3-none-any.whl$', path.name):
+    if not PUBLISH_PATTERN.match(path.name):
         print(f"{Color.RED}Invalid path name: {path.name}{Color.RESET}")
         exit(1)
 
     _ensure_installed('twine')
+    _ensure_installed('keyring_pass')
 
     print(f"{Color.YELLOW}Check{Color.RESET}")
     _run(f'twine check {path}')
 
+    env = {**os.environ}
+    if sys.platform != 'win32' and os.path.exists('/etc/ssl/certs/ca-certificates.crt'):
+        env['REQUESTS_CA_BUNDLE'] = '/etc/ssl/certs/ca-certificates.crt'
+    if proxy:
+        if not proxy.startswith(('http://','https://')):
+            proxy = f'http://{proxy}'
+        env['HTTP_PROXY'] = proxy
+        env['HTTPS_PROXY'] = proxy
+
     print(f"{Color.YELLOW}Publish{Color.RESET}")
-    _run(f'twine upload {path}')
+    print(env)
+    _run(f'twine upload {path}', env=env)
+
+def add_arguments(parser: ArgumentParser):
+    parser.add_argument('path')
+    parser.add_argument('-x', '--proxy')
+
+publish.add_arguments = add_arguments
 
 
-def _run(args, accept_returncode: int|list[int] = 0, capture_output = False, encoding = 'utf-8', input: str = None) -> subprocess.CompletedProcess[str]:
+# -----------------------------------------------------------------------------
+
+def _run(args, accept_returncode: int|list[int] = 0, capture_output = False, encoding = 'utf-8', input: str = None, env: dict = None) -> subprocess.CompletedProcess[str]:
     if isinstance(args, str):
         args = shlex.split(args)
     if not isinstance(accept_returncode, (list,tuple,set)):
@@ -141,7 +162,7 @@ def _run(args, accept_returncode: int|list[int] = 0, capture_output = False, enc
     else:
         options = {'stdout': sys.stdout, 'stderr': sys.stderr, 'stdin': sys.stdin}
 
-    cp = subprocess.run(args, text=True, encoding=encoding, input=input, **options)
+    cp = subprocess.run(args, text=True, encoding=encoding, input=input, env=env, **options)
 
     if capture_output:
         cp.stdout = cp.stdout.rstrip()
