@@ -3,13 +3,12 @@ VMWare Reporter
 
 Extract data easily from your VMWare clusters.
 
-See [git repository](https://github.com/ipamo/vmware-reporter) on _GitHub_ and [full documentation](https://vmware-reporter.readthedocs.io/) (including [API reference](https://vmware-reporter.readthedocs.io/en/latest/api-reference.html)) on _Read the Docs_.
+See [full documentation](https://vmware-reporter.readthedocs.io/) (including [API reference](https://vmware-reporter.readthedocs.io/en/latest/api-reference.html)) on _ReadTheDocs_, see [git repository](https://github.com/ipamo/vmware-reporter) on _GitHub_ and [published package](https://pypi.org/project/vmware-reporter/) on _PyPI_.
 
 [![Documentation Status](https://readthedocs.org/projects/vmware-reporter/badge/?version=latest)](https://vmware-reporter.readthedocs.io/en/latest/?badge=latest)
 
-## Installation
 
-Package `vmware-reporter` is [available on PyPI.org](https://pypi.org/project/vmware-reporter/):
+## Installation
 
 ```sh
 pip install vmware-reporter
