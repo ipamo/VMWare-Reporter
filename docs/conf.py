@@ -11,7 +11,7 @@ RESET = '\033[0m'
 YELLOW = '\033[0;33m'
 
 project = "VMWare Reporter"
-copyright = f"2024{f'-{date.today().year}' if date.today().year > 2024 else ''}, Sébastien Hocquet"
+copyright = f"2024{f'-{date.today().year}' if date.today().year > 2024 else ''}, Sébastien Hocquet <https://ipamo.net>"
 author = "Sébastien Hocquet"
 
 extensions = [

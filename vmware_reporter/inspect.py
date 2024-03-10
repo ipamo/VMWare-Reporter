@@ -1,5 +1,5 @@
 """
-Analyze ManagedObject instances.
+Analyze VMWare manage objects.
 """
 from __future__ import annotations
 from datetime import date
@@ -22,39 +22,21 @@ def get_obj_ref(obj: vim.ManagedObject) -> str:
     text = str(obj)
     m = re.match(r"^'(.*)\:(.*)'$", text)
     if not m:
-        raise ValueError(f'invalid object identifier: {text}')
+        raise ValueError(f'Invalid object identifier: {text}')
     
     expected_type = type(obj).__name__
     if m.group(1) != expected_type:
-        raise ValueError(f'invalid type for object identifier: {text}, expected: {expected_type}')
+        raise ValueError(f'Invalid type for object identifier: {text}, expected: {expected_type}')
     return m.group(2)
 
 
-def get_obj_attr(obj: vim.ManagedObject, attr: str):
-    try:
-        return getattr(obj, attr)
-    except Exception as err:
-        return f"!{type(err).__name__}:{err}"
-
-
-def get_obj_name(obj: vim.ManagedObject) -> str:
-    return get_obj_attr(obj, 'name')
-
-
-def get_obj_name_or_ref(obj: vim.ManagedObject) -> str:
-    try:
-        return obj.name
-    except vim.fault.NoPermission:
-        return f"ref:{get_obj_ref(obj)}"
-
-
-def get_obj_path(obj: vim.ManagedObject) -> str:
-    """ Return the full path of the given vim managed object. """
+def get_obj_path(obj: vim.ManagedEntity) -> str:
+    """ Return the full path of the given vim managed entity. """
     if isinstance(obj, vim.Datacenter):
-        return get_obj_name_or_ref(obj)
+        return obj.name
     else:
-        return get_obj_path(obj.parent) + "/" + get_obj_name_or_ref(obj)
-
+        return get_obj_path(obj.parent) + "/" + obj.name
+    
 
 def dictify_value(data: list|str):
     """
@@ -109,7 +91,7 @@ def dictify_value(data: list|str):
         return data
 
 
-def dump_obj(obj: vim.ManagedObject, with_object_types=False, exclude_keys=[], maxdepth=None) -> dict:
+def dump_obj(obj: vim.ManagedEntity, *, object_types=False, exclude_keys=[], max_depth=None) -> dict:
     """
     Export all available information about the given VMWare managed object to a dictionnary.
     """    
@@ -132,7 +114,7 @@ def dump_obj(obj: vim.ManagedObject, with_object_types=False, exclude_keys=[], m
         del keypath[-1]
 
     def dump_object(obj: object):
-        result = { '_type': type(obj).__name__ } if with_object_types else {}
+        result = { '_type': type(obj).__name__ } if object_types else {}
         any = False
         for key in dir(obj):
             ignore = False
@@ -154,8 +136,8 @@ def dump_obj(obj: vim.ManagedObject, with_object_types=False, exclude_keys=[], m
             except: # problem getting the data (e.g. invalid/not-supported accessor)
                 _key = keypath_str()
                 if _key not in ['configManagerEnabled', 'environmentBrowser']:
-                    logger.error('cannot read attribute: %s', _key)
-                value = "!error: cannot read attribute"
+                    logger.error('Cannot read attribute: %s', _key)
+                value = "!error:cannot_read"
             
             value = dump_any(value)
 
@@ -222,9 +204,9 @@ def dump_obj(obj: vim.ManagedObject, with_object_types=False, exclude_keys=[], m
             else:
                 return identify_obj(data)
 
-        elif maxdepth and len(keypath) >= maxdepth:
-            logger.error('reached maxdepth: %s', type(data).__name__)
-            return f"!error:maxdepth({type(data).__name__})"
+        elif max_depth and len(keypath) >= max_depth:
+            logger.error('Reached max depth: %s', type(data).__name__)
+            return f"!error:max_depth({type(data).__name__})"
 
         elif isinstance(data, dict):
             return dump_dict(data)
@@ -248,11 +230,16 @@ def identify_obj(obj: vim.ManagedObject) -> dict:
     data = {
         "_type": type(obj).__name__, # managed object type
         "ref": get_obj_ref(obj),
-        "name": get_obj_name(obj),
     }
 
-    if data["name"] == "Resources" and isinstance(obj, vim.ResourcePool) and hasattr(obj, 'parent') and isinstance(obj.parent, vim.ClusterComputeResource):
+    try:
+        if name := getattr(obj, 'name', None):
+            data["name"] = name            
+    except vim.fault.NoPermission:
+        data["name"] = '!error:no_permission'
+
+    if 'name' in data and data["name"] == "Resources" and isinstance(obj, vim.ResourcePool) and hasattr(obj, 'parent') and isinstance(obj.parent, vim.ClusterComputeResource):
         # root resource pool of a cluster (named 'Resources'): let's prepend cluster name
-        data["name"] = get_obj_name(obj.parent) + "/" + data["name"]
+        data["name"] = obj.parent.name + "/" + data["name"]
 
     return data

@@ -67,7 +67,7 @@ def clean(path: Path = None):
     if path.is_dir():
         if path.name == '.venv':
             pass # keep it as is
-        elif path.name in ['__pycache__', 'build'] or path.name.endswith('.egg-info'):
+        elif path.name in ['__pycache__', 'build'] or path.name.endswith('.egg-info') or path.as_posix().endswith('docs/api'):
             print(f'delete {path}')
             shutil.rmtree(path)
         else:

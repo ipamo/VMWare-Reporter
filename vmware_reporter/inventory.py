@@ -10,7 +10,7 @@ from io import IOBase
 from pyVmomi import vim
 
 from .client import VCenterClient
-from .inspect import get_obj_name, get_obj_ref
+from .inspect import get_obj_ref
 
 logger = logging.getLogger(__name__)
 
@@ -71,11 +71,11 @@ def build_inventory(vcenter: VCenterClient, assets: list[str] = None) -> Invento
 
 
 def build_folder_inventory(vcenter: VCenterClient, parent = None) -> InventoryNode:
-    found_by_ref: dict[str,vim.ManagedObject] = {}
+    found_by_ref: dict[str,vim.ManagedEntity] = {}
 
-    def recurse_tree(obj: vim.ManagedObject, parent: InventoryNode):
+    def recurse_tree(obj: vim.ManagedEntity, parent: InventoryNode):
         ref = get_obj_ref(obj)
-        name = get_obj_name(obj)
+        name = obj.name
         found_by_ref[ref] = obj
         node = InventoryNode(name, nature=type(obj), ref=ref, parent=parent)
 
@@ -120,8 +120,8 @@ def build_folder_inventory(vcenter: VCenterClient, parent = None) -> InventoryNo
                 if not additional_node:
                     additional_node = InventoryNode('(found in container view but not in folder tree)', parent=node)
             
-                name = get_obj_name(obj)
-                InventoryNode(name, nature=type(obj), ref=ref, child_of=f'{get_obj_name(obj.parent)} ({get_obj_ref(obj.parent)})', parent=additional_node)
+                name = obj.name
+                InventoryNode(name, nature=type(obj), ref=ref, child_of=f'{obj.parent.name} ({get_obj_ref(obj.parent)})', parent=additional_node)
     finally:
         if view:
             view.Destroy()
@@ -135,8 +135,8 @@ def build_folder_inventory(vcenter: VCenterClient, parent = None) -> InventoryNo
         if not additional_node:
             additional_node = InventoryNode('(found in folder tree but not in container view)', parent=node)
     
-        name = get_obj_name(obj)
-        InventoryNode(name, nature=type(obj), ref=ref, child_of=f'{get_obj_name(obj.parent)} ({get_obj_ref(obj.parent)})', parent=additional_node)
+        name = obj.name
+        InventoryNode(name, nature=type(obj), ref=ref, child_of=f'{obj.parent.name} ({get_obj_ref(obj.parent)})', parent=additional_node)
 
     return node
 
@@ -172,7 +172,7 @@ def build_authorization_inventory(vcenter: VCenterClient, parent = None) -> Inve
             principal_node = InventoryNode(permission.principal, nature=nature, parent=parent)
 
         ref = get_obj_ref(permission.entity)
-        name = get_obj_name(permission.entity)
+        name = permission.entity.name
         InventoryNode(name, nature=f"{type(permission.entity).__name__} permission", ref=ref, propagate=permission.propagate, parent=principal_node)
 
 

@@ -10,8 +10,8 @@ from contextlib import nullcontext
 from io import IOBase
 
 from .client import VCenterClient
-from .inspect import get_obj_name, get_obj_ref, dump_obj
-from .utils import ExtendedJSONEncoder
+from .inspect import get_obj_ref, dump_obj
+from reporter_utils import ExtendedJSONEncoder
 
 logger = logging.getLogger(__name__)
 
@@ -34,12 +34,12 @@ def export_obj_dump(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.
 
     first_types = []
 
-    for obj in vcenter.iterate_objs(types, search, normalize=normalize, key=key):
+    for obj in vcenter.get_objs(types, search, normalize=normalize, key=key):
         if first:
             if type(obj) in first_types:
                 continue
 
-        name = get_obj_name(obj)
+        name = obj.name
         ref = get_obj_ref(obj)
         data = dump_obj(obj)
 

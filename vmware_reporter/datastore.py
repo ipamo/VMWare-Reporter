@@ -1,18 +1,19 @@
 """
-Datastore features.
+List datastore files or perform operations on datastores.
 """
 from __future__ import annotations
 
 import logging
 import os
 import re
-from argparse import ArgumentParser
+from argparse import _SubParsersAction, ArgumentParser, RawTextHelpFormatter
 from contextlib import nullcontext
 from datetime import datetime
 from http import HTTPStatus
 from io import IOBase
 from pathlib import Path
 from typing import BinaryIO
+from textwrap import dedent
 from urllib.parse import urlencode
 
 import requests
@@ -20,7 +21,7 @@ from pyVmomi import vim
 
 from .client import VCenterClient
 from .inspect import get_obj_path
-from .utils import Bytes, tabulate
+from reporter_utils import Header, add_func_command, get_help_text, tabulate
 
 logger = logging.getLogger(__name__)
 
@@ -88,7 +89,7 @@ def get_datastore_stats(vcenter: VCenterClient, obj: vim.Datastore, path: str = 
             stat = DatastoreStat(obj, stat_path)
             stats[stat_path] = stat
 
-        stat.size += Bytes(info.size or 0)
+        stat.size += info.size or 0
 
         if stat.mtime is None or info.mtime > stat.mtime:
             stat.mtime = info.mtime
@@ -120,7 +121,7 @@ def export_datastore_elements(vcenter: VCenterClient, search: list[str|re.Patter
     """
     data = []
 
-    for obj in vcenter.get_objs(vim.Datastore, search, normalize=normalize, key=key, sort_key='name'):
+    for obj in vcenter.list_objs(vim.Datastore, search, normalize=normalize, key=key, sort_key='name'):
         logger.info(f'analyze datastore {obj.name}')
 
         try:
@@ -150,7 +151,7 @@ def export_datastore_stats(vcenter: VCenterClient, search: list[str|re.Pattern]|
     """
     data = []
 
-    for obj in vcenter.get_objs(vim.Datastore, search, normalize=normalize, key=key, sort_key='name'):
+    for obj in vcenter.list_objs(vim.Datastore, search, normalize=normalize, key=key, sort_key='name'):
         logger.info(f'analyze datastore {obj.name}')
 
         try:
@@ -193,7 +194,10 @@ def request_datastore_resource(method: str, vcenter: VCenterClient, datastore: v
     return response
 
 
-def download_from_datastore(vcenter: VCenterClient, datastore: vim.Datastore|str, path: os.PathLike, target: os.PathLike = ''):            
+def download_from_datastore(vcenter: VCenterClient, datastore: vim.Datastore|str, path: os.PathLike, target: os.PathLike = ''):
+    """
+    Download a file from a datastore.
+    """
     if isinstance(target, str) and (target == '' or target.endswith(('/', '\\'))):
         target += os.path.basename(path)
 
@@ -213,7 +217,10 @@ def add_arguments(parser: ArgumentParser):
 download_from_datastore.add_arguments = add_arguments
 
 
-def upload_to_datastore(vcenter: VCenterClient, source: os.PathLike|BinaryIO, datastore: vim.Datastore|str, target: os.PathLike = ''):        
+def upload_to_datastore(vcenter: VCenterClient, source: os.PathLike|BinaryIO, datastore: vim.Datastore|str, target: os.PathLike = ''):
+    """
+    Upload a file to a datastore.
+    """
     if isinstance(target, str) and (target == '' or target.endswith(('/', '\\'))):
         if isinstance(source, IOBase):
             raise ValueError(f"Cannot upload to a directory ({target}): source is not a path")
@@ -237,6 +244,9 @@ upload_to_datastore.add_arguments = add_arguments
 
 
 def delete_from_datastore(vcenter: VCenterClient, datastore: vim.Datastore|str, path: os.PathLike):
+    """
+    Delete a file from a datastore.
+    """
     response = request_datastore_resource('DELETE', vcenter, datastore, path)
     
     datastore_name = datastore.name if isinstance(datastore, vim.Datastore) else datastore
@@ -247,6 +257,20 @@ def add_arguments(parser: ArgumentParser):
     parser.add_argument('path', help="Path of the object to delete on the datastore.")
 
 delete_from_datastore.add_arguments = add_arguments
+
+
+def add_datastore_commands(commands_subparsers: _SubParsersAction[ArgumentParser], *, name: str):
+    parser = commands_subparsers.add_parser(name, help=get_help_text(__doc__), description=dedent(__doc__), formatter_class=RawTextHelpFormatter, add_help=False)
+
+    group = parser.add_argument_group(title='Command options')
+    group.add_argument('-h', '--help', action='help', help=f"Show this command help message and exit.")
+
+    subparsers = parser.add_subparsers(title='Sub commands')
+    add_func_command(subparsers, export_datastore_elements, name='elements')
+    add_func_command(subparsers, export_datastore_stats, name='stats')
+    add_func_command(subparsers, download_from_datastore, name='download')
+    add_func_command(subparsers, upload_to_datastore, name='upload')
+    add_func_command(subparsers, delete_from_datastore, name='delete')
 
 
 class DatastoreElement:
@@ -268,7 +292,7 @@ class DatastoreElement:
             if self.nature.endswith('FileInfo'):
                 self.nature = self.nature[:-len('FileInfo')]
             
-        self.size: Bytes|None = Bytes(info.fileSize) if info.fileSize is not None else None
+        self.size: int|None = int(info.fileSize) if info.fileSize is not None else None
         self.mtime: datetime|None = info.modification
         self.owner: str|None = info.owner
 
@@ -280,7 +304,7 @@ class DatastoreElement:
         'datastore',
         'path',
         'nature',
-        'size',
+        Header('size', format='bytes'),
         'mtime',
         'owner',
     ]
@@ -301,8 +325,8 @@ class DatastoreStat:
         self.obj = obj
         self.path = path
 
-        self.nature: str = None
-        self.size: Bytes|None = Bytes(0)
+        self.nature: str|None = None
+        self.size: int = 0
         self.mtime: datetime|None = None
         self.owner: str|None = None
 
@@ -319,7 +343,7 @@ class DatastoreStat:
         'datastore',
         'path',
         'nature',
-        'size',
+        Header('size', format='bytes'),
         'mtime',
         'owner',
         'depth',

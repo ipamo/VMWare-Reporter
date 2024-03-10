@@ -3,7 +3,7 @@ Extract data easily from your VMWare clusters.
 
 For more information, see https://github.com/ipamo/vmware-reporter.
 
-Copyright (C) 2024, Sébastien Hocquet - MIT license.
+Copyright (C) 2024, Sébastien Hocquet <https://ipamo.net> - MIT license.
 """
 from __future__ import annotations
 
@@ -11,9 +11,7 @@ from .client import VCenterClient
 from .datastore import (DatastoreElement, DatastoreStat, delete_from_datastore, download_from_datastore, export_datastore_elements, export_datastore_stats,
                         request_datastore_resource, get_datastore_stats, iterate_datastore_elements, upload_to_datastore)
 from .dump import export_obj_dump
-from .inspect import (dictify_value, dump_obj, get_obj_attr, get_obj_name,
-                      get_obj_name_or_ref, get_obj_path, get_obj_ref,
-                      identify_obj)
+from .inspect import (dictify_value, dump_obj, get_obj_path, get_obj_ref, identify_obj)
 from .inventory import InventoryNode, build_inventory, export_inventory
 from .utils import __prog__
 
@@ -25,6 +23,7 @@ except ImportError:
     __version_tuple__ = None
 
 __all__ = (
+    '__prog__', '__version__', '__version_tuple__',
     # client
     'VCenterClient',
     # datastore
@@ -33,11 +32,7 @@ __all__ = (
     # dump
     'export_obj_dump',
     # inspect
-    'dictify_value', 'dump_obj', 'get_obj_attr', 'get_obj_name',
-    'get_obj_name_or_ref', 'get_obj_path', 'get_obj_ref',
-    'identify_obj',
+    'dictify_value', 'dump_obj', 'get_obj_path', 'get_obj_ref', 'identify_obj',
     # inventory
     'InventoryNode', 'build_inventory', 'export_inventory',
-    # utils
-    '__prog__', '__version__', '__version_tuple__'
 )

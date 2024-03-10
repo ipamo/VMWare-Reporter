@@ -1,4 +1,5 @@
 from __future__ import annotations
+import inspect
 
 import logging
 import os
@@ -6,16 +7,18 @@ import re
 from pathlib import Path
 from collections.abc import Callable, Iterator
 from typing import Literal, TypeVar, overload
+from urllib.parse import urlparse
 from uuid import UUID
 
 from pyVim.connect import Disconnect, SmartConnect
 from pyVmomi import vim, vmodl
 from pyVmomi.VmomiSupport import _managedDefMap
 
-from .utils import Filters, __prog__, get_config
-from .inspect import get_obj_attr, get_obj_ref
+from reporter_utils import Filters, get_config, resolve_host
+from .inspect import get_obj_ref
+from .utils import __prog__, __prog_modulepath__
 
-T_Obj = TypeVar('T_Obj', bound=vim.ManagedObject)
+T_Obj = TypeVar('T_Obj', bound=vim.ManagedEntity)
 
 
 class VCenterClient:
@@ -36,7 +39,7 @@ class VCenterClient:
         """
         self.name = name or 'default'
         
-        config = get_config()
+        config = get_config(__prog_modulepath__)
         section = __prog__ if self.name == 'default' else f'{__prog__}:{self.name}'
             
         self.host = host if host is not None else config.get(section, 'host')
@@ -47,7 +50,7 @@ class VCenterClient:
         self.logger = logging.getLogger(f'{self.__class__.__module__}.{self.__class__.__qualname__}.{self.name}')
 
 
-    #region Enter and exit
+    #region Enter/connect and exit/close
 
     def __enter__(self):
         self.connect()
@@ -59,8 +62,19 @@ class VCenterClient:
 
 
     def connect(self):
-        self.logger.debug(f"Connect to {self.host} with user {self.user}")
-        self._service_instance = SmartConnect(host=self.host, user=self.user, pwd=self.password, disableSslCertValidation=self.no_ssl_verify)
+        addrs = resolve_host(self.host, timeout=2.0)
+        if not addrs:
+            raise ValueError(f"Cannot resolve host name \"{self.host}\"")
+        
+        addr = addrs[0]
+        self.logger.debug(f"Connect to {addr} ({self.host}) with user {self.user}")
+
+        options = {}
+        if 'httpConnectionTimeout' in inspect.signature(SmartConnect).parameters:
+            # Introduced in pyVmomi 8.0.0.1 (see https://github.com/vmware/pyvmomi/issues/627)
+            options['httpConnectionTimeout'] = 5.0
+
+        self._service_instance = SmartConnect(host=self.host, user=self.user, pwd=self.password, disableSslCertValidation=self.no_ssl_verify, **options)
 
 
     def close(self):
@@ -103,7 +117,7 @@ class VCenterClient:
         except AttributeError:
             pass
 
-        datacenters = self.get_objs(vim.Datacenter)
+        datacenters = self.list_objs(vim.Datacenter)
         if not datacenters:
             raise ValueError(f"Datacenter not found")
         if len(datacenters) > 1:
@@ -150,7 +164,7 @@ class VCenterClient:
                 raise KeyError(f"Not found: {search} (type: {type.__name__})")
 
         else:
-            iterator = self.iterate_objs(types=type, search=search, normalize=normalize, key=key)
+            iterator = self.get_objs(types=type, search=search, normalize=normalize, key=key)
             try:
                 found = next(iterator)
             except StopIteration:
@@ -168,28 +182,28 @@ class VCenterClient:
         if isinstance(uuid, UUID):
             uuid = str(uuid)
         
-        for datacenter in self.iterate_objs(vim.Datacenter):
+        for datacenter in self.get_objs(vim.Datacenter):
             obj = self.service_content.searchIndex.FindByUuid(datacenter, uuid, vmSearch=for_vm, instanceUuid=instance_uuid)
             if obj:
                 return obj
 
 
     @overload
-    def get_objs(self, types: type[T_Obj], search: list[str|re.Pattern]|str|re.Pattern = None, *, normalize: bool = None, key: Literal['name', 'ref'] = 'name', sort_key: str|list[str]|Callable = None) -> list[T_Obj]:
+    def list_objs(self, types: type[T_Obj], search: list[str|re.Pattern]|str|re.Pattern = None, *, normalize: bool = None, key: Literal['name', 'ref'] = 'name', sort_key: str|list[str]|Callable = None) -> list[T_Obj]:
         ...
 
-    def get_objs(self, types: list[type|str]|type|str = None, search: list[str|re.Pattern]|str|re.Pattern = None, *, normalize: bool = None, key: Literal['name', 'ref'] = 'name', sort_key: str|list[str]|Callable = None):        
+    def list_objs(self, types: list[type|str]|type|str = None, search: list[str|re.Pattern]|str|re.Pattern = None, *, normalize: bool = None, key: Literal['name', 'ref'] = 'name', sort_key: str|list[str]|Callable = None):        
         """
         List VMWare managed objects matching the given search.
         """
-        objs = [obj for obj in self.iterate_objs(types, search, normalize=normalize, key=key)]
+        objs = [obj for obj in self.get_objs(types, search, normalize=normalize, key=key)]
 
         if sort_key:
             if isinstance(sort_key, str):
                 sort_key = [sort_key]
 
             if isinstance(sort_key, list):
-                sort_func = lambda obj: [get_obj_attr(obj, attr) for attr in sort_key]
+                sort_func = lambda obj: [getattr(obj, attr) for attr in sort_key]
             else:
                 sort_func = sort_key
 
@@ -199,10 +213,10 @@ class VCenterClient:
 
 
     @overload
-    def iterate_objs(self, types: type[T_Obj], search: list[str|re.Pattern]|str|re.Pattern = None, *, normalize: bool = None, key: Literal['name', 'ref'] = 'name') -> Iterator[T_Obj]:
+    def get_objs(self, types: type[T_Obj], search: list[str|re.Pattern]|str|re.Pattern = None, *, normalize: bool = None, key: Literal['name', 'ref'] = 'name') -> Iterator[T_Obj]:
         ...
 
-    def iterate_objs(self, types: list[type|str]|type|str = None, search: list[str|re.Pattern]|str|re.Pattern = None, *, normalize: bool = None, key: Literal['name', 'ref'] = 'name'):
+    def get_objs(self, types: list[type|str]|type|str = None, search: list[str|re.Pattern]|str|re.Pattern = None, *, normalize: bool = None, key: Literal['name', 'ref'] = 'name'):
         """
         Iterate over VMWare managed objects matching the given search.
         """
@@ -231,7 +245,7 @@ class VCenterClient:
                 view.Destroy()
 
 
-    def _obj_matches(self, obj: vim.ManagedObject, key: Literal['name', 'ref'], filters: Filters):
+    def _obj_matches(self, obj: vim.ManagedEntity, key: Literal['name', 'ref'], filters: Filters):
         if not filters:
             return True
         
@@ -345,7 +359,7 @@ class VCenterClient:
 
         cls._configured_names = []
 
-        config = get_config()        
+        config = get_config(__prog_modulepath__)    
         for section in config.sections():
             if m := re.match(r'^' + re.escape(__prog__) + r'(?:\:(.+))?', section):
                 name = m[1]
@@ -359,17 +373,17 @@ class VCenterClient:
         return cls._configured_names
         
     @classmethod
-    def parse_obj_type(cls, value: str|type|vim.ManagedObject) -> type[vim.ManagedObject]:
+    def parse_obj_type(cls, value: str|type|vim.ManagedEntity) -> type[vim.ManagedEntity]:
         if not value:
             raise ValueError(f"name cannot be blank")
         
         elif isinstance(value, type):
-            if not issubclass(value, vim.ManagedObject):
-                raise TypeError(f"type {value} is not a subclass of vim.ManagedObject")
+            if not issubclass(value, vim.ManagedEntity):
+                raise TypeError(f"type {value} is not a subclass of vim.ManagedEntity")
             
             return value
         
-        elif isinstance(value, vim.ManagedObject):
+        elif isinstance(value, vim.ManagedEntity):
             return type(value)
         
         elif not isinstance(value, str):
@@ -402,7 +416,7 @@ class VCenterClient:
 
             raise KeyError(f"vim managed object type not found for name {value}")
 
-    def _build_obj_types() -> dict[str,type[vim.ManagedObject]]:
+    def _build_obj_types() -> dict[str,type[vim.ManagedEntity]]:
         types = {}
 
         for key in _managedDefMap.keys():
@@ -411,7 +425,7 @@ class VCenterClient:
 
             attr = key[len('vim.'):]
             _type = getattr(vim, attr)
-            if not issubclass(_type, vim.ManagedObject):
+            if not issubclass(_type, vim.ManagedEntity):
                 continue
 
             lower = attr.lower()
