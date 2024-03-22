@@ -1,8 +1,6 @@
 #!/usr/bin/env python
 from __future__ import annotations
-from importlib import import_module
 
-import ctypes
 import os
 import re
 import shlex
@@ -10,10 +8,16 @@ import shutil
 import subprocess
 import sys
 from argparse import ArgumentParser
+from importlib import import_module
 from pathlib import Path
 from typing import Callable
+from zut import Color
+from vmware_reporter import __prog__, __version__
 
-PUBLISH_PATTERN = re.compile(r'^vmware_reporter\-\d+\.\d+\.\d+((a|b)\d+)?+-py3-none-any.whl$')
+SNAKE_PROG = __prog__.replace('-', '_')
+
+PUBLISH_PATTERN = re.compile(r'^' + re.escape(SNAKE_PROG) + r'\-\d+\.\d+\.\d+((a|b)\d+)?+-py3-none-any\.whl$')
+PUBLISH_DOCS_PATTERN = re.compile(r'^' + re.escape(SNAKE_PROG) + r'\-docs\-\d+\.\d+\.\d+((a|b)\d+)?+\.zip$')
 
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -65,7 +69,7 @@ def clean(path: Path = None):
         path = BASE_DIR
 
     if path.is_dir():
-        if path.name == '.venv':
+        if path.name == '.venv' or path.name.startswith('.venv.'):
             pass # keep it as is
         elif path.name in ['__pycache__', 'build'] or path.name.endswith('.egg-info') or path.as_posix().endswith('docs/api'):
             print(f'delete {path}')
@@ -97,20 +101,34 @@ def docs(serve=False):
     _ensure_installed('sphinx')
     _ensure_installed('sphinx_rtd_theme')
     _ensure_installed('myst_parser')
+    _ensure_installed('docs_versions_menu')
     
-    print(f"{Color.YELLOW}Docs{Color.RESET}")
-    _run('rm -rf docs/build')
-    _run('sphinx-build docs docs/build')
+    if os.path.exists('docs/api'):
+        shutil.rmtree('docs/api')
+
+    target = f'docs/build/{__prog__}/v{__version__}'
+    if os.path.exists(target):
+        shutil.rmtree(target)
+    
+    print(f"{Color.YELLOW}Build docs{Color.RESET}")
+    _run(f'sphinx-build docs {target}')
+    
+    print(f"{Color.YELLOW}Create docs archive{Color.RESET}")
+    shutil.make_archive(f'dist/{SNAKE_PROG}-docs-{__version__}', 'zip', f'docs/build/{__prog__}', f'v{__version__}')
+    
+    print(f"{Color.YELLOW}Update versions.json{Color.RESET}")
+    _run('docs-versions-menu --default-branch main --no-downloads-file', cwd=f'docs/build/{__prog__}')
 
     if serve:
+        print(f"Visit {Color.CYAN}http://127.0.0.1:8001/{__prog__}/v{__version__}{Color.RESET}")
         _run(f"python -m http.server -b 127.0.0.1 -d docs/build 8001")
     else:
-        print(f"{Color.CYAN}TIP{Color.RESET}: serve docs with: {Color.CYAN}python -m http.server -b 127.0.0.1 -d docs/build 8001{Color.RESET} (or pass option {Color.CYAN}--serve{Color.RESET} to docs command)")
+        print(f"{Color.CYAN}TIP{Color.RESET}: serve docs with: {Color.CYAN}python -m http.server -b 127.0.0.1 -d docs/build 8001{Color.RESET} (or pass option {Color.CYAN}--serve{Color.RESET} to docs command) and visit {Color.CYAN}http://127.0.0.1:8001/{__prog__}/v{__version__}{Color.RESET}")
 
-def add_arguments(parser: ArgumentParser):
+def _add_arguments(parser: ArgumentParser):
     parser.add_argument('--serve', action='store_true')
 
-docs.add_arguments = add_arguments
+docs.add_arguments = _add_arguments
 
 
 # -----------------------------------------------------------------------------
@@ -127,7 +145,7 @@ def publish(path: str|Path, proxy: str = None):
     _ensure_installed('keyring_pass')
 
     print(f"{Color.YELLOW}Check{Color.RESET}")
-    _run(f'twine check {path}')
+    _run(f'twine check {path.as_posix()}')
 
     env = {**os.environ}
     if sys.platform != 'win32' and os.path.exists('/etc/ssl/certs/ca-certificates.crt'):
@@ -140,18 +158,39 @@ def publish(path: str|Path, proxy: str = None):
 
     print(f"{Color.YELLOW}Publish{Color.RESET}")
     print(env)
-    _run(f'twine upload {path}', env=env)
+    _run(f'twine upload {path.as_posix()}', env=env)
 
-def add_arguments(parser: ArgumentParser):
+def _add_arguments(parser: ArgumentParser):
     parser.add_argument('path')
     parser.add_argument('-x', '--proxy')
 
-publish.add_arguments = add_arguments
+publish.add_arguments = _add_arguments
+
+
+# -----------------------------------------------------------------------------
+@command
+def publish_docs(path: str|Path, host: str):
+    if not isinstance(path, Path):
+        path = Path(path)
+    
+    if not PUBLISH_DOCS_PATTERN.match(path.name):
+        print(f"{Color.RED}Invalid path name: {path.name}{Color.RESET}")
+        exit(1)
+
+    print(f"{Color.YELLOW}Publish docs{Color.RESET}")
+    _run(f"scp {path.as_posix()} {host}:{path.name}")
+    _run(f"ssh {host} ./update-docs.sh {path.name}")
+
+def _add_arguments(parser: ArgumentParser):
+    parser.add_argument('path')
+    parser.add_argument('host', help="SSH host")
+
+publish_docs.add_arguments = _add_arguments
 
 
 # -----------------------------------------------------------------------------
 
-def _run(args, accept_returncode: int|list[int] = 0, capture_output = False, encoding = 'utf-8', input: str = None, env: dict = None) -> subprocess.CompletedProcess[str]:
+def _run(args, accept_returncode: int|list[int] = 0, capture_output = False, encoding = 'utf-8', input: str = None, env: dict = None, cwd: os.PathLike = None) -> subprocess.CompletedProcess[str]:
     if isinstance(args, str):
         args = shlex.split(args)
     if not isinstance(accept_returncode, (list,tuple,set)):
@@ -162,7 +201,7 @@ def _run(args, accept_returncode: int|list[int] = 0, capture_output = False, enc
     else:
         options = {'stdout': sys.stdout, 'stderr': sys.stderr, 'stdin': sys.stdin}
 
-    cp = subprocess.run(args, text=True, encoding=encoding, input=input, env=env, **options)
+    cp = subprocess.run(args, text=True, encoding=encoding, input=input, env=env, cwd=cwd, **options)
 
     if capture_output:
         cp.stdout = cp.stdout.rstrip()
@@ -196,32 +235,6 @@ def _ensure_installed(*packages: str, check_module: str = None):
         _run(f"pip install {' '.join(packages)}")
     else:
         _run(f"sudo -i pip install {' '.join(packages)}")
-
-
-class Color:
-    RESET = '\033[0m'
-    BLACK = '\033[0;30m'
-    RED = '\033[0;31m'
-    GREEN = '\033[0;32m'
-    YELLOW = '\033[0;33m'
-    BLUE = '\033[0;34m'
-    PURPLE = '\033[0;35m'
-    CYAN = '\033[0;36m'
-    WHITE = '\033[0;37m'
-
-    # Disable coloring if environment variable NO_COLOR is set to 1
-    NO_COLOR = False
-    if (os.environ.get('NO_COLOR') or '0').lower() in ['1', 'yes', 'true', 'on']:
-        NO_COLOR = True
-        for _ in dir():
-            if isinstance(_, str) and _[0] != '_' and _ not in ['DISABLED']:
-                locals()[_] = ''
-
-    # Set Windows console in VT mode
-    if not NO_COLOR and sys.platform == 'win32':
-        _kernel32 = ctypes.windll.kernel32
-        _kernel32.SetConsoleMode(_kernel32.GetStdHandle(-11), 7)
-        del _kernel32
 
 
 if __name__ == '__main__':

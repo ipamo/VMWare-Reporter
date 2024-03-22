@@ -1,0 +1,58 @@
+help: Virtual machines.
+type: VirtualMachine
+tabulate:
+  - name
+  - ref
+  - folder
+  - template
+  - cluster
+  - memory
+  - vcpus
+  - disks_capacity
+  - disks_freespace
+  - main_ip
+  - network_names
+  - os
+vars:
+  disks: disks()
+  nics: nics()
+fields:
+  name: name
+  ref: ref
+  folder: parent.path
+  template: config.template
+  power_state: runtime.powerState
+  cluster:
+    _root: resourcePool.search_parent(ComputeResource)
+    _table: name
+    name: name
+    ref: ref
+  host:
+    _root: runtime.host
+    _table: name
+    name: name
+    ref: ref
+  memory: config.hardware.memoryMB fmt=gib multiply=1048576
+  vcpus: config.hardware.numCPU
+  disks_capacity: disks.capacity fmt=gib
+  disks_freespace: disks.freespace fmt=gib
+  disks:
+    _root: disks
+    _table: null
+  hostname: guest.hostName
+  main_ip: guest.ipAddress
+  network_names: nics.network_names
+  nics:
+    _root: nics
+    _table: null
+  os:
+    _root: config.extraConfig.'guestOS.detailed.data'
+    _table: prettyName
+  os_info: config.guestFullName  # as configured during creation of the VM. Might not match real OS at all.
+  vmtools: config.extraConfig.'guestinfo.vmtools.description'
+  created: config.createDate fmt=dateortime1970
+  changed:
+    _root: config.changeVersion fmt=dateortime1970 # NOTE: this is also updated on 'automatic' config changes (example?)
+    _table: null
+  overall_status: overallStatus
+  config_status: configStatus

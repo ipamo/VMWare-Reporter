@@ -1,22 +1,23 @@
 from __future__ import annotations
-import inspect
 
+import inspect
 import logging
 import os
 import re
-from pathlib import Path
 from collections.abc import Callable, Iterator
+from pathlib import Path
 from typing import Literal, TypeVar, overload
-from urllib.parse import urlparse
 from uuid import UUID
 
 from pyVim.connect import Disconnect, SmartConnect
 from pyVmomi import vim, vmodl
 from pyVmomi.VmomiSupport import _managedDefMap
+from zut import Filters, get_config, resolve_host
 
-from reporter_utils import Filters, get_config, resolve_host
+import vmware_reporter
+
+from . import __prog__
 from .inspect import get_obj_ref
-from .utils import __prog__, __prog_modulepath__
 
 T_Obj = TypeVar('T_Obj', bound=vim.ManagedEntity)
 
@@ -39,7 +40,7 @@ class VCenterClient:
         """
         self.name = name or 'default'
         
-        config = get_config(__prog_modulepath__)
+        config = get_config(vmware_reporter, if_none='warn')
         section = __prog__ if self.name == 'default' else f'{__prog__}:{self.name}'
             
         self.host = host if host is not None else config.get(section, 'host')
@@ -359,7 +360,7 @@ class VCenterClient:
 
         cls._configured_names = []
 
-        config = get_config(__prog_modulepath__)    
+        config = get_config(vmware_reporter, if_none='warn')    
         for section in config.sections():
             if m := re.match(r'^' + re.escape(__prog__) + r'(?:\:(.+))?', section):
                 name = m[1]
@@ -438,4 +439,37 @@ class VCenterClient:
             
     OBJ_TYPES = _build_obj_types()
     
+    #endregion
+
+
+    #region Retrieve network objects by key
+    
+    def get_portgroup_by_key(self, key: str) -> vim.dvs.DistributedVirtualPortgroup:
+        if key is None:
+            return None
+        
+        try:
+            by_key = self._portgroups_by_key
+        except AttributeError:
+            by_key = {}
+            for obj in self.get_objs(vim.dvs.DistributedVirtualPortgroup):
+                by_key[obj.key] = obj
+            self._portgroups_by_key = by_key
+
+        return by_key.get(key)
+    
+    def get_switch_by_uuid(self, uuid: str) -> vim.DistributedVirtualSwitch:
+        if uuid is None:
+            return None
+        
+        try:
+            by_uuid = self._switchs_by_uuid
+        except AttributeError:
+            by_uuid = {}
+            for obj in self.get_objs(vim.DistributedVirtualSwitch):
+                by_uuid[obj.uuid] = obj
+            self._switchs_by_uuid = by_uuid
+
+        return by_uuid.get(uuid)
+
     #endregion

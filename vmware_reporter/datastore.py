@@ -1,5 +1,5 @@
 """
-List datastore files or perform operations on datastores.
+Analyze datastore files or perform operations on datastores.
 """
 from __future__ import annotations
 
@@ -13,7 +13,6 @@ from http import HTTPStatus
 from io import IOBase
 from pathlib import Path
 from typing import BinaryIO
-from textwrap import dedent
 from urllib.parse import urlencode
 
 import requests
@@ -21,9 +20,24 @@ from pyVmomi import vim
 
 from .client import VCenterClient
 from .inspect import get_obj_path
-from reporter_utils import Header, add_func_command, get_help_text, tabulate
+from zut import Header, add_func_command, get_help_text, get_description_text, out_table
 
 logger = logging.getLogger(__name__)
+
+
+def add_datastore_commands(commands_subparsers: _SubParsersAction[ArgumentParser], *, name: str):
+    parser = commands_subparsers.add_parser(name, help=get_help_text(__doc__), description=get_description_text(__doc__), formatter_class=RawTextHelpFormatter, add_help=False)
+
+    group = parser.add_argument_group(title='Command options')
+    group.add_argument('-h', '--help', action='help', help=f"Show this command help message and exit.")
+
+    subparsers = parser.add_subparsers(title='Sub commands')
+    add_func_command(subparsers, export_datastore_elements, name='elements')
+    add_func_command(subparsers, export_datastore_stats, name='stats')
+    add_func_command(subparsers, download_from_datastore, name='download')
+    add_func_command(subparsers, upload_to_datastore, name='upload')
+    add_func_command(subparsers, delete_from_datastore, name='delete')
+
 
 
 def iterate_datastore_elements(vcenter: VCenterClient, obj: vim.Datastore, path: str = None, *, pattern: str = None, max_depth: int = None, with_size: bool = True, with_mtime: bool = True, with_owner: bool = True, case_sensitive: bool = False):
@@ -115,25 +129,22 @@ def get_datastore_stats(vcenter: VCenterClient, obj: vim.Datastore, path: str = 
     return sorted(stats.values(), key=lambda stat: stat.path)
 
 
-def export_datastore_elements(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern = None, *, normalize: bool = False, key: str = 'name', path: str = None, max_depth: int = None, out: os.PathLike|IOBase = None, csv: bool = None):
+def export_datastore_elements(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern = None, *, normalize: bool = False, key: str = 'name', path: str = None, max_depth: int = None, out: os.PathLike|IOBase = None, csv: bool = None, bytes: bool = False):
     """
     Export list of datastore elements (files and directories).
     """
-    data = []
+    with out_table(out, headers=DatastoreElement.get_headers(bytes=bytes), title="datastore elements", csv=csv) as t:
+        for obj in vcenter.list_objs(vim.Datastore, search, normalize=normalize, key=key, sort_key='name'):
+            logger.info(f'analyze datastore {obj.name}')
 
-    for obj in vcenter.list_objs(vim.Datastore, search, normalize=normalize, key=key, sort_key='name'):
-        logger.info(f'analyze datastore {obj.name}')
-
-        try:
-            for info in sorted(iterate_datastore_elements(vcenter, obj, path=path, max_depth=max_depth), key=lambda info: info.path):
-                data.append(info.as_row())
-        except:
-            logger.exception(f'cannot analyze datastore {obj.name}')
-
-    tabulate(data, headers=DatastoreElement.headers, title="datastore elements", out=out, csv=csv)
+            try:
+                for info in sorted(iterate_datastore_elements(vcenter, obj, path=path, max_depth=max_depth), key=lambda info: info.path):
+                    t.append(info.as_row())
+            except:
+                logger.exception(f'cannot analyze datastore {obj.name}')
 
 
-def add_arguments(parser: ArgumentParser):
+def _add_arguments(parser: ArgumentParser):
     parser.add_argument('search', nargs='*', help="Search term(s).")
     parser.add_argument('-n', '--normalize', action='store_true', help="Normalise search term(s).")
     parser.add_argument('-k', '--key', choices=['name', 'ref'], default='name', help="Search key (default: %(default)s).")
@@ -141,29 +152,27 @@ def add_arguments(parser: ArgumentParser):
     parser.add_argument("--max-depth", type=int, help="Detail elements until the given depth (default: %(default)s).")
     parser.add_argument('-o', '--out', help="Output file (default: stdout).")
     parser.add_argument('--csv', action="store_true", default=None, help="Force CSV output (even if out is set to stdout or stderr).")
+    parser.add_argument('--bytes', action="store_true", help="Display size as bytes.")
 
-export_datastore_elements.add_arguments = add_arguments
+export_datastore_elements.add_arguments = _add_arguments
 
 
-def export_datastore_stats(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern = None, *, normalize: bool = False, key: str = 'name', path: str = None, max_depth: int = None, out: os.PathLike|IOBase = None, csv: bool = None):
+def export_datastore_stats(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern = None, *, normalize: bool = False, key: str = 'name', path: str = None, max_depth: int = None, out: os.PathLike|IOBase = None, csv: bool = None, bytes: bool = False):
     """
     Export stats about datastore elements (files and directories).
     """
-    data = []
+    with out_table(out, headers=DatastoreStat.get_headers(bytes=bytes), title="datastore elements", csv=csv) as t:
+        for obj in vcenter.list_objs(vim.Datastore, search, normalize=normalize, key=key, sort_key='name'):
+            logger.info(f'analyze datastore {obj.name}')
 
-    for obj in vcenter.list_objs(vim.Datastore, search, normalize=normalize, key=key, sort_key='name'):
-        logger.info(f'analyze datastore {obj.name}')
-
-        try:
-            for info in get_datastore_stats(vcenter, obj, path=path, max_depth=max_depth):
-                data.append(info.as_row())
-        except:
-            logger.exception(f'cannot analyze datastore {obj.name}')
-
-    tabulate(data, headers=DatastoreStat.headers, title="datastore stats", out=out, csv=csv)
+            try:
+                for info in get_datastore_stats(vcenter, obj, path=path, max_depth=max_depth):
+                    t.append(info.as_row())
+            except:
+                logger.exception(f'cannot analyze datastore {obj.name}')
 
 
-def add_arguments(parser: ArgumentParser):
+def _add_arguments(parser: ArgumentParser):
     parser.add_argument('search', nargs='*', help="Search term(s).")
     parser.add_argument('-n', '--normalize', action='store_true', help="Normalise search term(s).")
     parser.add_argument('-k', '--key', choices=['name', 'ref'], default='name', help="Search key (default: %(default)s).")
@@ -171,8 +180,9 @@ def add_arguments(parser: ArgumentParser):
     parser.add_argument("--max-depth", type=int, default=1, help="Detail elements until the given depth (default: %(default)s).")
     parser.add_argument('-o', '--out', help="Output file (default: stdout).")
     parser.add_argument('--csv', action="store_true", default=None, help="Force CSV output (even if out is set to stdout or stderr).")
+    parser.add_argument('--bytes', action="store_true", help="Display size as bytes.")
 
-export_datastore_stats.add_arguments = add_arguments
+export_datastore_stats.add_arguments = _add_arguments
 
 
 def request_datastore_resource(method: str, vcenter: VCenterClient, datastore: vim.Datastore|str, path: os.PathLike, data: BinaryIO = None):
@@ -209,12 +219,12 @@ def download_from_datastore(vcenter: VCenterClient, datastore: vim.Datastore|str
     datastore_name = datastore.name if isinstance(datastore, vim.Datastore) else datastore
     logger.info("%s %s from datastore %s to %s", 'downloaded' if response.status_code == HTTPStatus.OK else f'{response.status_code} {response.reason}', path, datastore_name, target)
 
-def add_arguments(parser: ArgumentParser):
+def _add_arguments(parser: ArgumentParser):
     parser.add_argument('datastore', help="Name of the datastore.")
     parser.add_argument('path', help="Path of the object to download on the datastore.")
     parser.add_argument('target', nargs='?', default='', help="Target path on the local file system.")
 
-download_from_datastore.add_arguments = add_arguments
+download_from_datastore.add_arguments = _add_arguments
 
 
 def upload_to_datastore(vcenter: VCenterClient, source: os.PathLike|BinaryIO, datastore: vim.Datastore|str, target: os.PathLike = ''):
@@ -235,12 +245,12 @@ def upload_to_datastore(vcenter: VCenterClient, source: os.PathLike|BinaryIO, da
     datastore_name = datastore.name if isinstance(datastore, vim.Datastore) else datastore
     logger.info("uploaded %s to datastore %s: %s %s", source, datastore_name, 'created' if response.status_code == HTTPStatus.CREATED else ('updated' if response.status_code == HTTPStatus.OK else f'{response.status_code} {response.reason}'), target)
 
-def add_arguments(parser: ArgumentParser):
+def _add_arguments(parser: ArgumentParser):
     parser.add_argument('source', help="Path of the source data.")
     parser.add_argument('datastore', help="Name of the datastore.")
     parser.add_argument('target', nargs='?', default='', help="Target path on the datastore.")
 
-upload_to_datastore.add_arguments = add_arguments
+upload_to_datastore.add_arguments = _add_arguments
 
 
 def delete_from_datastore(vcenter: VCenterClient, datastore: vim.Datastore|str, path: os.PathLike):
@@ -252,34 +262,25 @@ def delete_from_datastore(vcenter: VCenterClient, datastore: vim.Datastore|str, 
     datastore_name = datastore.name if isinstance(datastore, vim.Datastore) else datastore
     logger.info("%s %s from datastore %s", 'deleted' if response.status_code == HTTPStatus.NO_CONTENT else f'{response.status_code} {response.reason}', path, datastore_name)
 
-def add_arguments(parser: ArgumentParser):
+def _add_arguments(parser: ArgumentParser):
     parser.add_argument('datastore', help="Name of the datastore.")
     parser.add_argument('path', help="Path of the object to delete on the datastore.")
 
-delete_from_datastore.add_arguments = add_arguments
+delete_from_datastore.add_arguments = _add_arguments
 
 
-def add_datastore_commands(commands_subparsers: _SubParsersAction[ArgumentParser], *, name: str):
-    parser = commands_subparsers.add_parser(name, help=get_help_text(__doc__), description=dedent(__doc__), formatter_class=RawTextHelpFormatter, add_help=False)
-
-    group = parser.add_argument_group(title='Command options')
-    group.add_argument('-h', '--help', action='help', help=f"Show this command help message and exit.")
-
-    subparsers = parser.add_subparsers(title='Sub commands')
-    add_func_command(subparsers, export_datastore_elements, name='elements')
-    add_func_command(subparsers, export_datastore_stats, name='stats')
-    add_func_command(subparsers, download_from_datastore, name='download')
-    add_func_command(subparsers, upload_to_datastore, name='upload')
-    add_func_command(subparsers, delete_from_datastore, name='delete')
+def remove_datastore_prefix(obj: vim.Datastore, dspath: str):
+    if dspath.startswith(f'[{obj.name}]'):
+        dspath = dspath[len(f'[{obj.name}]'):]
+        if dspath.startswith(' '):
+            dspath = dspath[1:]
+    return dspath
 
 
 class DatastoreElement:
     def __init__(self, obj: vim.Datastore, info: vim.host.DatastoreBrowser.FileInfo, parent_dspath: str):
         self.obj = obj
-        if parent_dspath.startswith(f'[{obj.name}]'):
-            parent_dspath = parent_dspath[len(f'[{obj.name}]'):]
-            if parent_dspath.startswith(' '):
-                parent_dspath = parent_dspath[1:]
+        parent_dspath = remove_datastore_prefix(obj, parent_dspath)
         self.path: str = parent_dspath + info.path
 
         if isinstance(info, vim.host.DatastoreBrowser.FolderInfo):
@@ -300,14 +301,17 @@ class DatastoreElement:
     def is_folder(self):
         return self.nature == 'Folder'
 
-    headers = [
-        'datastore',
-        'path',
-        'nature',
-        Header('size', format='bytes'),
-        'mtime',
-        'owner',
-    ]
+
+    @classmethod
+    def get_headers(cls, *, bytes = False):
+        return [
+            'datastore',
+            'path',
+            'nature',
+            'size' if bytes else Header('size', format='giga_bytes'),
+            'mtime',
+            'owner',
+        ]
 
     def as_row(self):
         return [
@@ -339,18 +343,20 @@ class DatastoreStat:
     def is_folder(self):
         return self.nature == 'Folder'
 
-    headers = [
-        'datastore',
-        'path',
-        'nature',
-        Header('size', format='bytes'),
-        'mtime',
-        'owner',
-        'depth',
-        'dir_count',
-        'file_count',
-        'other_count',
-    ]
+    @classmethod
+    def get_headers(cls, *, bytes = False):
+        return [
+            'datastore',
+            'path',
+            'nature',
+            'size' if bytes else Header('size', format='giga_bytes'),
+            'mtime',
+            'owner',
+            'depth',
+            'dir_count',
+            'file_count',
+            'other_count',
+        ]
 
     def as_row(self):
         return [

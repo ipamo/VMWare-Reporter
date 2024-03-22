@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vmware-reporter"
-authors = [{ name="Sébastien Hocquet <https://ipamo.net>" }]
+authors = [{ name="Sébastien Hocquet", email="dev@ipamo.net" }]
 description = "Extract data easily from your VMWare clusters."
 readme = "README.md"
 keywords = ["vmware", "vsphere", "vm", "reporter"]

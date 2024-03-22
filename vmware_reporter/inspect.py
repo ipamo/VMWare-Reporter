@@ -2,13 +2,18 @@
 Analyze VMWare manage objects.
 """
 from __future__ import annotations
+from contextlib import nullcontext
 from datetime import date
 
+from io import IOBase
+import json
 import logging
+import os
 import re
 from types import BuiltinFunctionType, BuiltinMethodType, FunctionType, MethodType
 
 from pyVmomi import vim
+from zut import ExtendedJSONEncoder
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +41,31 @@ def get_obj_path(obj: vim.ManagedEntity) -> str:
         return obj.name
     else:
         return get_obj_path(obj.parent) + "/" + obj.name
+
+
+def identify_obj(obj: vim.ManagedObject) -> dict:
+    if obj is None:
+        return None
+
+    if not isinstance(obj, vim.ManagedObject):
+        raise ValueError(f'invalid type: {type(obj)}')
+
+    data = {
+        "_type": type(obj).__name__, # managed object type
+        "ref": get_obj_ref(obj),
+    }
+
+    try:
+        if name := getattr(obj, 'name', None):
+            data["name"] = name            
+    except vim.fault.NoPermission:
+        data["name"] = '!error:no_permission'
+
+    if 'name' in data and data["name"] == "Resources" and isinstance(obj, vim.ResourcePool) and hasattr(obj, 'parent') and isinstance(obj.parent, vim.ClusterComputeResource):
+        # root resource pool of a cluster (named 'Resources'): let's prepend cluster name
+        data["name"] = obj.parent.name + "/" + data["name"]
+
+    return data
     
 
 def dictify_value(data: list|str):
@@ -91,7 +121,7 @@ def dictify_value(data: list|str):
         return data
 
 
-def dump_obj(obj: vim.ManagedEntity, *, object_types=False, exclude_keys=[], max_depth=None) -> dict:
+def dictify_obj(obj: vim.ManagedEntity, *, object_types=False, exclude_keys=[], max_depth=None) -> dict:
     """
     Export all available information about the given VMWare managed object to a dictionnary.
     """    
@@ -113,7 +143,13 @@ def dump_obj(obj: vim.ManagedEntity, *, object_types=False, exclude_keys=[], max
     def backward():
         del keypath[-1]
 
-    def dump_object(obj: object):
+    def handle_object(obj: object):
+        if method := getattr(obj.__class__, 'to_dict', None):
+            value = method(obj)
+            if value and object_types:
+                    return { '_type': type(obj).__name__, **value }
+            return value
+
         result = { '_type': type(obj).__name__ } if object_types else {}
         any = False
         for key in dir(obj):
@@ -139,7 +175,7 @@ def dump_obj(obj: vim.ManagedEntity, *, object_types=False, exclude_keys=[], max
                     logger.error('Cannot read attribute: %s', _key)
                 value = "!error:cannot_read"
             
-            value = dump_any(value)
+            value = handle_any(value)
 
             if value is not None:
                 result[key] = value
@@ -150,12 +186,12 @@ def dump_obj(obj: vim.ManagedEntity, *, object_types=False, exclude_keys=[], max
         if any:
             return result
 
-    def dump_dict(data: dict):
+    def handle_dict(data: dict):
         result = {}
         any = False
         for key in data:
             forward(key)
-            value = dump_any(data[key])
+            value = handle_any(data[key])
             if value is not None:
                 result[key] = value
                 any = True
@@ -164,7 +200,7 @@ def dump_obj(obj: vim.ManagedEntity, *, object_types=False, exclude_keys=[], max
         if any:
             return result
 
-    def dump_list(data: list):
+    def handle_list(data: list):
         result = dictify_value(data)
         if isinstance(result, dict):
             return result
@@ -174,7 +210,7 @@ def dump_obj(obj: vim.ManagedEntity, *, object_types=False, exclude_keys=[], max
         any = False
         for i, value in enumerate(data):
             forward(i)
-            extracted = dump_any(value)
+            extracted = handle_any(value)
             if extracted is not None:
                 result.append(extracted)
                 any = True
@@ -183,7 +219,7 @@ def dump_obj(obj: vim.ManagedEntity, *, object_types=False, exclude_keys=[], max
         if any:
             return result
 
-    def dump_any(data):
+    def handle_any(data):
         if data is None or isinstance(data, (type, FunctionType, MethodType, BuiltinMethodType, BuiltinFunctionType)):
             return None
         
@@ -198,7 +234,7 @@ def dump_obj(obj: vim.ManagedEntity, *, object_types=False, exclude_keys=[], max
         elif isinstance(data, vim.ManagedObject):
             if not keypath: # depth == 0
                 result = identify_obj(data)
-                for key, value in dump_object(data).items():
+                for key, value in handle_object(data).items():
                     result[key] = value
                 return result
             else:
@@ -209,37 +245,30 @@ def dump_obj(obj: vim.ManagedEntity, *, object_types=False, exclude_keys=[], max
             return f"!error:max_depth({type(data).__name__})"
 
         elif isinstance(data, dict):
-            return dump_dict(data)
+            return handle_dict(data)
 
         elif isinstance(data, list):
-            return dump_list(data)
+            return handle_list(data)
             
         else:
-            return dump_object(data)
+            return handle_object(data)
 
-    return dump_any(obj)
+    return handle_any(obj)
 
 
-def identify_obj(obj: vim.ManagedObject) -> dict:
-    if obj is None:
-        return None
+def dump_obj(obj: vim.ManagedObject, obj_out: os.PathLike|IOBase, *, title: str = None):
+    if not title:
+        title = getattr(obj, 'name', None)
+        if not title:
+            title = type(obj).__name__
 
-    if not isinstance(obj, vim.ManagedObject):
-        raise ValueError(f'invalid type: {type(obj)}')
+    if isinstance(obj_out, IOBase):
+        out_name = getattr(obj_out, 'name', '<io>')
+    else:
+        out_name = str(obj_out)
 
-    data = {
-        "_type": type(obj).__name__, # managed object type
-        "ref": get_obj_ref(obj),
-    }
+    data = dictify_obj(obj)
 
-    try:
-        if name := getattr(obj, 'name', None):
-            data["name"] = name            
-    except vim.fault.NoPermission:
-        data["name"] = '!error:no_permission'
-
-    if 'name' in data and data["name"] == "Resources" and isinstance(obj, vim.ResourcePool) and hasattr(obj, 'parent') and isinstance(obj.parent, vim.ClusterComputeResource):
-        # root resource pool of a cluster (named 'Resources'): let's prepend cluster name
-        data["name"] = obj.parent.name + "/" + data["name"]
-
-    return data
+    logger.info(f"export {title} to {out_name}")
+    with nullcontext(obj_out) if isinstance(obj_out, IOBase) else open(obj_out, 'w', encoding='utf-8') as fp:
+        json.dump(data, fp=fp, indent=4, cls=ExtendedJSONEncoder, ensure_ascii=False)

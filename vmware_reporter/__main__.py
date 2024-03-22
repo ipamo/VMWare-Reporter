@@ -1,37 +1,48 @@
+"""
+Extract data easily from your VMWare clusters.
+"""
 import inspect
 import logging
+import os
 import sys
 from argparse import ArgumentParser, RawTextHelpFormatter
 from contextlib import nullcontext
 from types import FunctionType
 
-from reporter_utils import add_func_command, configure_logging, get_help_text
+from zut import add_func_command, configure_logging, get_help_text, OutTable
 
-from . import (VCenterClient, __doc__, __prog__, __version__,
-               export_inventory, export_obj_dump)
-
+from . import __prog__, __version__
+from .client import VCenterClient
 from .datastore import add_datastore_commands
+from .dump import dump
+from .inventory import export_inventory
+from .network import add_network_commands
+from .vm import add_vm_commands
 from .extract import handle as extract_handle
 
 logger = logging.getLogger(__name__)
 
 def main():
     configure_logging()
+    OutTable.DEFAULT_EXCEL_ATEXIT = True
     
     vcenter_names = VCenterClient.get_configured_names()
 
     parser = ArgumentParser(prog=__prog__, description=get_help_text(__doc__), formatter_class=RawTextHelpFormatter, add_help=False, epilog='\n'.join(__doc__.splitlines()[2:]))
     
     group = parser.add_argument_group(title='General options')
-    group.add_argument('-e', '--vcenter', '--env', help=f"Name of the vCenter client to use. Available: {', '.join(vcenter_names) if vcenter_names else 'none'}.")
+    group.add_argument('-e', '--vcenter', '--env', default=os.environ.get('VMWARE_DEFAULT_CLIENT'), help=f"Name of the vCenter client to use. Available: {', '.join(vcenter_names) if vcenter_names else 'none'}.")
     group.add_argument('-h', '--help', action='help', help=f"Show this program help message and exit.")
     group.add_argument('--version', action='version', version=f"{__prog__} {__version__ or '?'}", help="Show version information and exit.")
 
     subparsers = parser.add_subparsers(title='Commands')
     add_func_command(subparsers, export_inventory, name='inventory')
-    add_func_command(subparsers, export_obj_dump, name='dump')
+    add_func_command(subparsers, dump, name='dump')
     add_func_command(subparsers, extract_handle, name='extract')
+    
     add_datastore_commands(subparsers, name='datastore')
+    add_network_commands(subparsers, name='network')
+    add_vm_commands(subparsers, name='vm')
 
     args = vars(parser.parse_args())
     handle = args.pop('handle', None)
@@ -56,7 +67,7 @@ def get_vcenter_context(handle: FunctionType, args: dict):
             elif len(vcenter_names) == 1:
                 vcenter_name = vcenter_names[0]
             elif 'vcenter' in args:
-                logger.error(f"No vCenter configured.")
+                logger.error(f"No vCenter client configured.")
                 sys.exit(1)
         
         context = VCenterClient(vcenter_name)

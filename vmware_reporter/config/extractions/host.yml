@@ -5,19 +5,21 @@ fields:
   ref: ref
   overall_status: overallStatus
   config_status: configStatus
-  memory: hardware.memorySize format=bytes
-  cpu_package: hardware.cpuInfo.numCpuPackages
-  cpu_core: hardware.cpuInfo.numCpuCores
+  memory: hardware.memorySize fmt=gib
+  cpu_packages: hardware.cpuInfo.numCpuPackages
+  cpu_cores: hardware.cpuInfo.numCpuCores
   model:
-    _table: name
-    name: hardware.systemInfo.model
-    vendor: hardware.systemInfo.vendor
+    _root: hardware.systemInfo
+    _table: model
+    name: model
+    vendor: vendor
   serial: hardware.systemInfo.otherIdentifyingInfo.SerialNumberTag
   enclosure: hardware.systemInfo.otherIdentifyingInfo.EnclosureSerialNumberTag
   boot_time: runtime.bootTime
   vmware_product: config.product.fullName
   cluster:
+    _root: parent
     _table: name
-    name: parent.name
-    ref: parent.ref
+    name: name
+    ref: ref
   state: runtime.dasHostState.state

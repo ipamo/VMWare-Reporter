@@ -1,16 +1,12 @@
-VMWare Reporter
+VMWare-reporter
 ===============
 
 Extract data easily from your VMWare clusters.
 
-See [full documentation](https://vmware-reporter.readthedocs.io/) (including [API reference](https://vmware-reporter.readthedocs.io/en/latest/api-reference.html)) on _ReadTheDocs_, [git repository](https://github.com/ipamo/vmware-reporter) on _GitHub_ and [published package](https://pypi.org/project/vmware-reporter/) on _PyPI_.
-
-[![Documentation Status](https://readthedocs.org/projects/vmware-reporter/badge/?version=latest)](https://vmware-reporter.readthedocs.io/en/latest/?badge=latest)
-
 
 ## Installation
 
-Install [Python](https://www.python.org/downloads/), then:
+VMWare-reporter package is published [on PyPI](https://pypi.org/project/vmware-reporter/):
 
 ```sh
 pip install vmware-reporter
@@ -30,18 +26,20 @@ no_ssl_verify = True
 ```
 
 
-## Usage
+## Usage examples
 
-VMWare Reporter may be used as a library in your Python code:
+See also [full documentation](https://ipamo.net/vmware-reporter) (including [API reference](https://ipamo.net/vmware-reporter/latest/api-reference.html)).
+
+VMWare-reporter may be used as a library in your Python code:
 
 ```py
-from vmware_reporter import VCenterClient
+from vmware_reporter.client import VCenterClient
 with VCenterClient() as vcenter:
     for vm in vcenter.iterate_objs('vm'):
         print(vm.name)
 ```
 
-It may also be invoked as a command-line application (`vmware-reporter` executable is installed with the package). Examples:
+VMWare-reporter may also be invoked as a command-line application (the `vmware-reporter` executable is installed with the package). Examples:
 
 - Export inventory of VMWare managed objects to a YAML file:
 

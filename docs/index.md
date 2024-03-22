@@ -4,6 +4,6 @@
 ```{toctree}
 :maxdepth: 1
 :caption: Documentation
-Home <home>
+home
 api-reference
 ```

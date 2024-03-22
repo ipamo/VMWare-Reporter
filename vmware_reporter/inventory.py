@@ -38,11 +38,11 @@ def export_inventory(vcenter: VCenterClient, assets: list[str] = None, out: os.P
     inventory.to_yaml(out)
 
 
-def add_arguments(parser: ArgumentParser):
+def _add_arguments(parser: ArgumentParser):
     parser.add_argument('-o', '--out', default=DEFAULT_OUT_MASK, help="Output YAML file (default: %(default)s).")
     parser.add_argument('--asset', nargs='*', dest='assets')
 
-export_inventory.add_arguments = add_arguments
+export_inventory.add_arguments = _add_arguments
 
 
 def build_inventory(vcenter: VCenterClient, assets: list[str] = None) -> InventoryNode:
