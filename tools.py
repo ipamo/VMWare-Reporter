@@ -156,7 +156,6 @@ def publish(path: str|Path, proxy: str = None):
         env['HTTPS_PROXY'] = proxy
 
     print(f"{Color.YELLOW}Publish{Color.RESET}")
-    print(env)
     _run(f'twine upload {path.as_posix()}', env=env)
 
 def _add_arguments(parser: ArgumentParser):
