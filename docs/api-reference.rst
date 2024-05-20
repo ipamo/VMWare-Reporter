@@ -9,11 +9,11 @@ API reference
     :template: custom-module-template.rst
     :recursive:
 
-    vmware_reporter.client
+    vmware_reporter
     vmware_reporter.datastore
     vmware_reporter.dump
     vmware_reporter.extract
     vmware_reporter.inspect
     vmware_reporter.inventory
-    vmware_reporter.network
+    vmware_reporter.networking
     vmware_reporter.vm
