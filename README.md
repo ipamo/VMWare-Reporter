@@ -1,7 +1,7 @@
 VMWare-reporter
 ===============
 
-Extract data easily from your VMWare clusters.
+Interact easily with your VMWare clusters.
 
 
 ## Installation
@@ -33,7 +33,7 @@ See also [full documentation](https://ipamo.net/vmware-reporter) (including [API
 VMWare-reporter may be used as a library in your Python code:
 
 ```py
-from vmware_reporter.client import VCenterClient
+from vmware_reporter import VCenterClient
 with VCenterClient() as vcenter:
     for vm in vcenter.iterate_objs('vm'):
         print(vm.name)

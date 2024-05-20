@@ -269,6 +269,6 @@ def dump_obj(obj: vim.ManagedObject, obj_out: os.PathLike|IOBase, *, title: str 
 
     data = dictify_obj(obj)
 
-    logger.info(f"export {title} to {out_name}")
+    logger.info(f"Export {title} to {out_name}")
     with nullcontext(obj_out) if isinstance(obj_out, IOBase) else open(obj_out, 'w', encoding='utf-8') as fp:
         json.dump(data, fp=fp, indent=4, cls=ExtendedJSONEncoder, ensure_ascii=False)

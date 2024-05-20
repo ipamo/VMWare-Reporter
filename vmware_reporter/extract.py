@@ -11,7 +11,7 @@ from zut import out_table, Literal, get_config_paths
 from reporter_utils.extractions import Extraction, get_extractions
 
 import vmware_reporter
-from .client import VCenterClient
+from . import VCenterClient
 from .inspect import dictify_value, dictify_obj, get_obj_path, get_obj_ref
 from .vm import extract_disks, extract_nics
 
@@ -23,7 +23,7 @@ class VMWareExtraction(Extraction):
         self.vcenter = vcenter
 
     def get_objs(self, search: list[str|re.Pattern]|str|re.Pattern = None, *, normalize: bool = False, key: str = 'name'):
-        return self.vcenter.list_objs(self.type, search, normalize=normalize, key=key)
+        return self.vcenter.get_objs(self.type, search, normalize=normalize, key=key)
         
     def get_obj_name_or_ignore_reason(self, obj: vim.ManagedEntity):
         try:

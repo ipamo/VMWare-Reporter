@@ -4,16 +4,17 @@ Analyze VM disks or NICs.
 from __future__ import annotations
 
 import logging
-from argparse import _SubParsersAction, ArgumentParser, RawTextHelpFormatter
-from pathlib import Path
 import re
+from argparse import ArgumentParser, RawTextHelpFormatter, _SubParsersAction
+from pathlib import Path
 from typing import Literal
 
 from pyVmomi import vim
-from zut import Header, out_table, gigi_bytes, get_help_text, get_description_text, add_func_command
+from zut import (Header, add_func_command, get_description_text, get_help_text,
+                 gigi_bytes, out_table)
 from zut.excel import openpyxl
 
-from .client import VCenterClient
+from . import VCenterClient
 from .inspect import dictify_obj, dictify_value, get_obj_ref
 
 logger = logging.getLogger(__name__)
@@ -25,20 +26,21 @@ def add_vm_commands(commands_subparsers: _SubParsersAction[ArgumentParser], *, n
     group.add_argument('-h', '--help', action='help', help=f"Show this command help message and exit.")
 
     subparsers = parser.add_subparsers(title='Sub commands')
+    #TODO add_func_command(subparsers, list_vms, name='list')
     add_func_command(subparsers, analyze_disks, name='disks')
     add_func_command(subparsers, analyze_nics, name='nics')
 
 
+DEFAULT_OUT = 'vms.xlsx#{title}' if openpyxl else 'vms-{title}.csv'
+
+
 #region Disks
 
-DEFAULT_DISKS_OUT = VCenterClient.DEFAULT_OUT_DIR_MASK.joinpath('disks.xlsx#{title}' if openpyxl else 'disks-{title}.csv')
-
-
-def analyze_disks(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern = None, *, normalize: bool = False, key: str = 'name', out: str = DEFAULT_DISKS_OUT, top: int = None):
+def analyze_disks(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern = None, *, normalize: bool = False, key: str = 'name', out: str = DEFAULT_OUT, top: int = None):
     """
     Analyze VM disks.
     """
-    vms_headers = [
+    disks_per_vm_headers = [
         'vm',
         'power_state',
         'os_info',
@@ -61,7 +63,7 @@ def analyze_disks(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pa
         'issues',
     ]
 
-    details_headers = [
+    disks_headers = [
         'vm',
         'power_state',
         'os_info',
@@ -83,10 +85,10 @@ def analyze_disks(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pa
         'capacity_loss_pct',
     ]
     
-    with (out_table(out, title='details', vcenter=vcenter.name, headers=details_headers) as t_details,
-          out_table(out, title='vms', vcenter=vcenter.name, headers=vms_headers) as t_vms):
+    with (out_table(out, title='disks', headers=disks_headers, dir=vcenter.get_out_dir()) as t_disks,
+          out_table(out, title='disks_per_vm', headers=disks_per_vm_headers, dir=vcenter.get_out_dir()) as t_disks_per_vm):
         
-        for i, vm in enumerate(vcenter.get_objs(vim.VirtualMachine, search, normalize=normalize, key=key)):
+        for i, vm in enumerate(vcenter.iter_objs(vim.VirtualMachine, search, normalize=normalize, key=key)):
             if top is not None and i == top:
                 break
             
@@ -106,7 +108,7 @@ def analyze_disks(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pa
                     for guest in disk.guests:
                         mapped_guests.append(guest)
 
-                t_vms.append([
+                t_disks_per_vm.append([
                     vm.name, # vm
                     vm.runtime.powerState, # power_state
                     vm.config.guestFullName, # os_info
@@ -142,7 +144,7 @@ def analyze_disks(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pa
                     capacity_loss = disk.capacity - disk.guests_capacity if disk.guests else None
                     capacity_loss_pct = 100 * capacity_loss / disk.capacity if disk.guests else None
                     
-                    t_details.append([
+                    t_disks.append([
                         vm.name, # vm
                         vm.runtime.powerState, # power_state
                         vm.config.guestFullName, # os_info
@@ -165,7 +167,7 @@ def analyze_disks(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pa
                     ])
 
                 for guest in [*info.unmapped_guests, *info.ignored_guests]:
-                    t_details.append([
+                    t_disks.append([
                         vm.name, # vm
                         vm.runtime.powerState, # power_state
                         vm.config.guestFullName, # os_info
@@ -196,7 +198,7 @@ def _add_arguments(parser: ArgumentParser):
     parser.add_argument('-n', '--normalize', action='store_true', help="Normalise search term(s).")
     parser.add_argument('-k', '--key', choices=['name', 'ref'], default='name', help="Search key (default: %(default)s).")
     parser.add_argument('--top', type=int)
-    parser.add_argument('-o', '--out', default=DEFAULT_DISKS_OUT, help="Output Excel or CSV file (default: %(default)s).")
+    parser.add_argument('-o', '--out', default=DEFAULT_OUT, help="Output Excel or CSV file (default: %(default)s).")
 
 analyze_disks.add_arguments = _add_arguments
 
@@ -466,14 +468,11 @@ class VmDisk:
 
 #region NICs
 
-DEFAULT_NICS_OUT = VCenterClient.DEFAULT_OUT_DIR_MASK.joinpath('nics.xlsx#{title}' if openpyxl else 'nics-{title}.csv')
-
-
-def analyze_nics(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern = None, *, normalize: bool = False, key: str = 'name', out: str = DEFAULT_NICS_OUT, top: int = None):
+def analyze_nics(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern = None, *, normalize: bool = False, key: str = 'name', out: str = DEFAULT_OUT, top: int = None):
     """
     Analyze VM network interfaces.
     """
-    vms_headers = [
+    nics_per_vm_headers = [
         'vm',
         'power_state',
         'os_info',
@@ -488,7 +487,7 @@ def analyze_nics(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pat
         'issues',
     ]
 
-    details_headers = [
+    nics_headers = [
         'vm',
         'power_state',
         'os_info',
@@ -503,10 +502,10 @@ def analyze_nics(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pat
         'guests_network_name',
     ]
     
-    with (out_table(out, title='details', vcenter=vcenter.name, headers=details_headers) as t_details,
-          out_table(out, title='vms', vcenter=vcenter.name, headers=vms_headers) as t_vms):
+    with (out_table(out, title='nics', headers=nics_headers, dir=vcenter.get_out_dir()) as t_nics,
+          out_table(out, title='nics_per_vm', headers=nics_per_vm_headers, dir=vcenter.get_out_dir()) as t_nics_per_vm):
         
-        for i, vm in enumerate(vcenter.get_objs(vim.VirtualMachine, search, normalize=normalize, key=key)):
+        for i, vm in enumerate(vcenter.iter_objs(vim.VirtualMachine, search, normalize=normalize, key=key)):
             if top is not None and i == top:
                 break
             
@@ -526,7 +525,7 @@ def analyze_nics(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pat
                     for guest in nic.guests:
                         mapped_guests.append(guest)
 
-                t_vms.append([
+                t_nics_per_vm.append([
                     vm.name, # vm
                     vm.runtime.powerState, # power_state
                     vm.config.guestFullName, # os_info
@@ -570,7 +569,7 @@ def analyze_nics(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pat
                             ip_addresses.append(ip)
                         networks.append(guest.network)
                     
-                    t_details.append([
+                    t_nics.append([
                         vm.name, # vm
                         vm.runtime.powerState, # power_state
                         vm.config.guestFullName, # os_info
@@ -586,7 +585,7 @@ def analyze_nics(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pat
                     ])
 
                 for guest in info.unmapped_guests:
-                    t_details.append([
+                    t_nics.append([
                         vm.name, # vm
                         vm.runtime.powerState, # power_state
                         vm.config.guestFullName, # os_info
@@ -610,7 +609,7 @@ def _add_arguments(parser: ArgumentParser):
     parser.add_argument('-n', '--normalize', action='store_true', help="Normalise search term(s).")
     parser.add_argument('-k', '--key', choices=['name', 'ref'], default='name', help="Search key (default: %(default)s).")
     parser.add_argument('--top', type=int)
-    parser.add_argument('-o', '--out', default=DEFAULT_NICS_OUT, help="Output Excel or CSV file (default: %(default)s).")
+    parser.add_argument('-o', '--out', default=DEFAULT_OUT, help="Output Excel or CSV file (default: %(default)s).")
 
 analyze_nics.add_arguments = _add_arguments
 
@@ -739,7 +738,7 @@ class VmNic:
                 return network_obj
             else:
                 switch_obj = self.vcenter.get_switch_by_uuid(connection_obj.switchUuid)
-                port_key = int(connection_obj.portKey) if re.match(r'^\d+$', connection_obj.portKey) else connection_obj.portKey
+                port_key = int(connection_obj.portKey) if connection_obj.portKey is not None and re.match(r'^\d+$', connection_obj.portKey) else connection_obj.portKey
                 if switch_obj:
                     return {'switch': switch_obj, 'port': port_key}
                 else:

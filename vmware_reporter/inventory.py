@@ -9,15 +9,15 @@ from io import IOBase
 
 from pyVmomi import vim
 
-from .client import VCenterClient
+from . import VCenterClient
 from .inspect import get_obj_ref
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_OUT_MASK = VCenterClient.DEFAULT_OUT_DIR_MASK.joinpath("inventory.yml")
+DEFAULT_OUT = "inventory.yml"
 
 
-def export_inventory(vcenter: VCenterClient, assets: list[str] = None, out: os.PathLike|IOBase = DEFAULT_OUT_MASK):
+def export_inventory(vcenter: VCenterClient, assets: list[str] = None, out: os.PathLike|IOBase = DEFAULT_OUT):
     """
     Export inventory of VMWare managed objects to a YAML file.
     """
@@ -31,7 +31,7 @@ def export_inventory(vcenter: VCenterClient, assets: list[str] = None, out: os.P
     if isinstance(out, IOBase):
         out_name = getattr(out, 'name', '<io>')
     else:
-        out = vcenter.compile_path_mask(out, parent_mkdir=True)
+        out = os.path.join(vcenter.get_out_dir(), out)
         out_name = str(out)
         
     logger.info(f"export inventory to {out_name}")
@@ -39,14 +39,14 @@ def export_inventory(vcenter: VCenterClient, assets: list[str] = None, out: os.P
 
 
 def _add_arguments(parser: ArgumentParser):
-    parser.add_argument('-o', '--out', default=DEFAULT_OUT_MASK, help="Output YAML file (default: %(default)s).")
+    parser.add_argument('-o', '--out', default=DEFAULT_OUT, help="Output YAML file (default: %(default)s).")
     parser.add_argument('--asset', nargs='*', dest='assets')
 
 export_inventory.add_arguments = _add_arguments
 
 
 def build_inventory(vcenter: VCenterClient, assets: list[str] = None) -> InventoryNode:
-    node = InventoryNode(vcenter.name, nature=VCenterClient)
+    node = InventoryNode(vcenter.env, nature=VCenterClient)
 
     if not assets:
         assets = ['folder', 'license', 'authorization']
@@ -209,7 +209,7 @@ class InventoryNode:
         return result
 
     def to_yaml(self, file, depth = 0):
-        with open(file, 'w', encoding='utf-8') if isinstance(file, os.PathLike) else nullcontext(file) as fp:
+        with nullcontext(file) if isinstance(file, IOBase) else open(file, 'w', encoding='utf-8') as fp:
             print(f"{' ' * self.indent_size * depth + '- ' if depth > 0 else ''}{self}:", file=fp)
             for child in self.children:
                 child.to_yaml(fp, depth+1)

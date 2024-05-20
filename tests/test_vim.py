@@ -1,6 +1,6 @@
 from unittest import TestCase
 from pyVmomi import vim
-from vmware_reporter.client import VCenterClient
+from vmware_reporter import VCenterClient
 
 class Case(TestCase):
     def test_types(self):

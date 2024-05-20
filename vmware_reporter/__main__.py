@@ -1,82 +1,82 @@
 """
-Extract data easily from your VMWare clusters.
+Interact easily with your VMWare clusters.
 """
+from __future__ import annotations
+from configparser import ConfigParser
 import inspect
 import logging
 import os
-import sys
-from argparse import ArgumentParser, RawTextHelpFormatter
+from argparse import ArgumentParser, RawTextHelpFormatter, _SubParsersAction
 from contextlib import nullcontext
 from types import FunctionType
 
-from zut import add_func_command, configure_logging, get_help_text, OutTable
+from zut import (OutTable, add_func_command, configure_logging, exec_command,
+                 get_help_text, register_locale)
 
-from . import __prog__, __version__
-from .client import VCenterClient
+from . import VCenterClient, __prog__, __version__
 from .datastore import add_datastore_commands
 from .dump import dump
-from .inventory import export_inventory
-from .network import add_network_commands
-from .vm import add_vm_commands
 from .extract import handle as extract_handle
+from .inventory import export_inventory
+from .networking import add_networking_commands
+from .vm import add_vm_commands
 
 logger = logging.getLogger(__name__)
 
 def main():
     configure_logging()
-    OutTable.DEFAULT_EXCEL_ATEXIT = True
-    
-    vcenter_names = VCenterClient.get_configured_names()
+    register_locale(use_excel_csv=(os.environ.get('USE_EXCEL_CSV') or '1').lower() in ['1', 'yes', 'true', 'on'])
+    OutTable.DEFAULT_EXCEL_ATEXIT = (os.environ.get('DEFAULT_EXCEL_ATEXIT') or '1').lower() in ['1', 'yes', 'true', 'on']
 
-    parser = ArgumentParser(prog=__prog__, description=get_help_text(__doc__), formatter_class=RawTextHelpFormatter, add_help=False, epilog='\n'.join(__doc__.splitlines()[2:]))
-    
-    group = parser.add_argument_group(title='General options')
-    group.add_argument('-e', '--vcenter', '--env', default=os.environ.get('VMWARE_DEFAULT_CLIENT'), help=f"Name of the vCenter client to use. Available: {', '.join(vcenter_names) if vcenter_names else 'none'}.")
-    group.add_argument('-h', '--help', action='help', help=f"Show this program help message and exit.")
-    group.add_argument('--version', action='version', version=f"{__prog__} {__version__ or '?'}", help="Show version information and exit.")
+    parser = init_parser(__prog__, __version__, __doc__)
 
     subparsers = parser.add_subparsers(title='Commands')
+    add_commands(subparsers)
+    
+    parse_and_exec_command(parser)
+    
+
+def init_parser(prog: str = None, version: str = None, doc: str = None, *, config: ConfigParser = None, section: str = None):
+    parser = ArgumentParser(prog=prog, description=get_help_text(doc), formatter_class=RawTextHelpFormatter, add_help=False, epilog='\n'.join(doc.splitlines()[2:]))
+    
+    envs = VCenterClient.get_configured_envs(config=config, section=section)
+
+    group = parser.add_argument_group(title='General options')
+    group.add_argument('-e', '--env', default=os.environ.get('VMWARE_DEFAULT_ENV'), help=f"Name of the vCenter to use. Available: {', '.join(envs) if envs else 'none'}.")
+    group.add_argument('-h', '--help', action='help', help=f"Show this program help message and exit.")
+    group.add_argument('--version', action='version', version=f"{prog} {version or '?'}", help="Show version information and exit.")
+
+    return parser
+
+
+def add_commands(subparsers: _SubParsersAction[ArgumentParser]):
     add_func_command(subparsers, export_inventory, name='inventory')
     add_func_command(subparsers, dump, name='dump')
     add_func_command(subparsers, extract_handle, name='extract')
     
     add_datastore_commands(subparsers, name='datastore')
-    add_network_commands(subparsers, name='network')
+    add_networking_commands(subparsers, name='networking')
     add_vm_commands(subparsers, name='vm')
+        
 
+def get_vcenter(handle: FunctionType, args: dict, *, config: ConfigParser = None, section: str = None):
+    if 'vcenter' in inspect.signature(handle).parameters:
+        env = args.pop('env', None)
+        vcenter = VCenterClient(env, config=config, section=section)
+        args['vcenter'] = vcenter    
+    else:
+        vcenter = nullcontext()
+
+    return vcenter
+        
+
+def parse_and_exec_command(parser: ArgumentParser, *, config: ConfigParser = None, section: str = None):    
     args = vars(parser.parse_args())
     handle = args.pop('handle', None)
-    if not handle:
-        logger.error(f"No command provided.")
-        sys.exit(1)
 
-    with get_vcenter_context(handle, args):
-        handle(**args)
-        
+    with get_vcenter(handle, args, config=config, section=section):
+        exec_command(handle, args)
 
-def get_vcenter_context(handle: FunctionType, args: dict):
-    vcenter_name = args.pop('vcenter')
-    need_vcenter = 'vcenter' in inspect.signature(handle).parameters
-
-    if need_vcenter:        
-        if not vcenter_name:
-            vcenter_names = VCenterClient.get_configured_names()
-            if len(vcenter_names) > 1:
-                logger.error(f"Name of the vCenter client to use must be provided (option --vcenter). Available: {', '.join(vcenter_names) if vcenter_names else 'none'}.")
-                sys.exit(1)
-            elif len(vcenter_names) == 1:
-                vcenter_name = vcenter_names[0]
-            elif 'vcenter' in args:
-                logger.error(f"No vCenter client configured.")
-                sys.exit(1)
-        
-        context = VCenterClient(vcenter_name)
-        args['vcenter'] = context
-    
-    else:
-        context = nullcontext()
-
-    return context
 
 if __name__ == '__main__':
     main()
