@@ -3,9 +3,14 @@ Analyze VM disks or NICs.
 """
 from __future__ import annotations
 
+from datetime import datetime
+from io import IOBase
+import json
 import logging
+import os
 import re
 from argparse import ArgumentParser, RawTextHelpFormatter, _SubParsersAction
+from ipaddress import IPv4Address, IPv6Address, ip_address
 from pathlib import Path
 from typing import Literal
 
@@ -15,7 +20,7 @@ from zut import (Header, add_func_command, get_description_text, get_help_text,
 from zut.excel import openpyxl
 
 from . import VCenterClient
-from .inspect import dictify_obj, dictify_value, get_obj_ref
+from .inspect import dictify_obj, dictify_value, get_obj_ref, get_obj_path
 
 logger = logging.getLogger(__name__)
 
@@ -26,12 +31,250 @@ def add_vm_commands(commands_subparsers: _SubParsersAction[ArgumentParser], *, n
     group.add_argument('-h', '--help', action='help', help=f"Show this command help message and exit.")
 
     subparsers = parser.add_subparsers(title='Sub commands')
-    #TODO add_func_command(subparsers, list_vms, name='list')
+    add_func_command(subparsers, list_vms, name='list')
     add_func_command(subparsers, analyze_disks, name='disks')
     add_func_command(subparsers, analyze_nics, name='nics')
 
 
 DEFAULT_OUT = 'vms.xlsx#{title}' if openpyxl else 'vms-{title}.csv'
+
+
+#region List
+
+def list_vms(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern = None, *, normalize: bool = False, key: str = 'name', out: os.PathLike|IOBase = DEFAULT_OUT):
+    headers = [
+        'name',
+        'ref',
+        'template',
+        # Config
+        'vcpu',
+        Header('memory', fmt='gib'),
+        Header('disk_capacity', fmt='gib'),
+        Header('disk_freespace', fmt='gib'),
+        'disk_count',
+        'nic_count',
+        # Dossier / rangement
+        'folder',
+        'assignment',
+        'annotation',
+        'create_date',
+        'change_date',
+        # Config details
+        'hostname',
+        'network',
+        'disk',
+        # ResourcePool / runtime
+        'resource_pool',
+        'host',
+        'power_state',
+        'paused',
+        'connection_state',
+        'boot_time',
+        'hw_version',
+        # Guest info
+        'os_family',
+        'os_version',
+        'os_distro_version',
+        'os_kernel_version',
+        'tools_status',
+        'tools_running_status',
+        'tools_version_number',
+        'tools_version',
+        'guestinfo_publish_time',
+    ]
+
+    with out_table(out, title='vms', dir=vcenter.get_out_dir(), headers=headers, after1970=True) as t:
+        for obj in vcenter.iter_objs(vim.VirtualMachine, search, normalize=normalize, key=key):  
+            try:
+                logger.info(f"Analyze {obj.name}")
+
+                disks = extract_disks(obj)
+                nics = extract_nics(obj, vcenter=vcenter)
+
+                custom_values = get_custom_values(obj)
+                assignment = custom_values.pop('Appartenance', None)
+                annotations = obj.config.annotation
+                for key, value in custom_values.items():
+                    annotations += (' | ' if annotations else '') + f"{key}: {value}"
+
+                extra_config = dictify_value(obj.config.extraConfig)
+
+                t.append([
+                    obj.name,
+                    get_obj_ref(obj),
+                    obj.config.template,
+                    # Config
+                    obj.config.hardware.numCPU,
+                    obj.config.hardware.memoryMB * 1024 * 1024,
+                    disks.capacity,
+                    disks.freespace,
+                    obj.summary.config.numVirtualDisks,
+                    obj.summary.config.numEthernetCards,
+                    # Dossier / rangement
+                    get_obj_path(obj.parent),
+                    assignment,
+                    annotations,
+                    obj.config.createDate,
+                    datetime.fromisoformat(obj.config.changeVersion),
+                    # Config details
+                    obj.guest.hostName,
+                    nics.to_summary(ip_version=4),
+                    disks.to_summary(),
+                    # ResourcePool / runtime
+                    get_obj_path(obj.resourcePool),
+                    obj.runtime.host.name,
+                    obj.runtime.powerState,
+                    obj.runtime.paused,
+                    obj.runtime.connectionState,
+                    obj.runtime.bootTime,
+                    obj.config.version,
+                    # Guest info
+                    get_os_family(extra_config, obj.config.guestFullName),
+                    get_os_version(extra_config),
+                    get_os_distro_version(extra_config),
+                    get_os_kernel_version(extra_config),
+                    obj.guest.toolsStatus,  # nominal: toolsOk
+                    obj.guest.toolsRunningStatus,  # nominal: guestToolsRunning
+                    get_tools_version_number(obj.guest.toolsVersion),  # version number
+                    get_tools_version(extra_config, obj.guest.toolsVersion),      
+                    get_guestinfo_publish_time(extra_config),
+                ])
+            
+            except Exception as err:
+                logger.exception(f"Error while analyzing {str(obj)}")
+
+
+def _add_arguments(parser: ArgumentParser):
+    parser.add_argument('search', nargs='*', help="Search term(s).")
+    parser.add_argument('-n', '--normalize', action='store_true', help="Normalise search term(s).")
+    parser.add_argument('-k', '--key', choices=['name', 'ref'], default='name', help="Search key (default: %(default)s).")
+    parser.add_argument('-o', '--out', default=DEFAULT_OUT, help="Output table (default: %(default)s).")
+
+list_vms.add_arguments = _add_arguments
+
+
+def get_tools_version_number(toolsversion: str):
+    if re.match(r'^\d+$', toolsversion):
+        toolsversion = int(toolsversion)
+        if toolsversion == 0 or toolsversion == 2147483647:
+            return None
+        return toolsversion    
+    elif toolsversion:
+        return str(toolsversion)
+    else:
+        return None
+
+
+def get_os_family(extra_config: dict, configured_fullname: str):
+    def get_family_from_configured(fullname: str):
+        if m := re.match(r'^(.+) \(\d\d\-bit\)$', fullname):
+            fullname = m[1]
+            
+        lower_fullname = fullname.lower()
+        if 'windows' in lower_fullname:
+            return "Windows"
+        elif 'linux' in lower_fullname or 'centos' in lower_fullname:
+            return "Linux"
+        elif lower_fullname == 'other':
+            return None
+        else:
+            return fullname
+      
+    if 'guestInfo.detailed.data' in extra_config:
+        line = extra_config['guestInfo.detailed.data']
+        if m := re.match(r".*familyName='([^']+)'.*", line):
+            return m[1]
+    elif 'guestOS.detailed.data' in extra_config:
+        data = extra_config.get("guestOS.detailed.data")
+        if isinstance(data, dict) and 'familyName' in data:
+            return data['familyName']
+
+    if configured_fullname:
+        return get_family_from_configured(configured_fullname)
+
+
+
+def get_os_version(extra_config: dict):
+    if 'guestInfo.detailed.data' in extra_config:
+        line = extra_config['guestInfo.detailed.data']
+        if m := re.match(r".*prettyName='([^']+)'.*", line):
+            return m[1]
+        else:
+            return line
+    elif 'guestOS.detailed.data' in extra_config:
+        data = extra_config.get("guestOS.detailed.data")
+        if isinstance(data, dict) and 'prettyName' in data:
+            return data['prettyName']
+        else:
+            return str(data)
+    else:
+        return None
+
+
+def get_os_distro_version(extra_config: dict):
+    if 'guestInfo.detailed.data' in extra_config:
+        line = extra_config['guestInfo.detailed.data']
+        if m := re.match(r".*distroVersion='([^']+)'.*", line):
+            return m[1]
+    if 'guestOS.detailed.data' in extra_config:
+        data = extra_config.get("guestOS.detailed.data")
+        if isinstance(data, dict) and 'distroVersion' in data:
+            return data['distroVersion']
+
+
+def get_os_kernel_version(extra_config: dict):
+    if 'guestInfo.detailed.data' in extra_config:
+        line = extra_config['guestInfo.detailed.data']
+        if m := re.match(r".*kernelVersion='([^']+)'.*", line):
+            return m[1]
+    if 'guestOS.detailed.data' in extra_config:
+        data = extra_config.get("guestOS.detailed.data")
+        if isinstance(data, dict) and 'kernelVersion' in data:
+            return data['kernelVersion']
+        
+
+def get_guestinfo_publish_time(extra_config: dict):
+    if not 'guestinfo.appInfo' in extra_config:
+        return
+    
+    appinfo_str = extra_config['guestinfo.appInfo']
+    if not isinstance(appinfo_str, str):
+        return str(appinfo_str)
+    
+    if appinfo_str == "":
+        return
+    
+    try:
+        appinfo = json.loads(appinfo_str)
+    except json.decoder.JSONDecodeError as err:
+        return f"Cannot parse \"{appinfo_str}\": {err}"
+
+    if 'publishTime' in appinfo:
+        return datetime.fromisoformat(appinfo['publishTime'])
+
+
+def get_tools_version(extra_config: dict, version_number: str):
+    if 'guestinfo.vmtools.versionNumber' in extra_config and 'guestinfo.vmtools.description' in extra_config:
+        if extra_config['guestinfo.vmtools.versionNumber'] == version_number:
+            return extra_config['guestinfo.vmtools.description']
+
+
+def get_custom_values(vm: vim.VirtualMachine):
+    available_fields = {}
+    custom_values = {}
+
+    for field in vm.availableField:
+        available_fields[field.key] = field.name
+
+    for value in vm.value:
+        custom_values[available_fields[value.key]] = value.value
+        
+    for value in vm.customValue:
+        custom_values[available_fields[value.key]] = value.value
+
+    return custom_values
+
+#endregion
 
 
 #region Disks
@@ -43,9 +286,8 @@ def analyze_disks(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pa
     disks_per_vm_headers = [
         'vm',
         'power_state',
-        'os_info',
         'os_family',
-        'os_name',
+        'os_version',
         'device_disks',
         'guest_disks',
         'with_mappings',
@@ -66,9 +308,8 @@ def analyze_disks(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pa
     disks_headers = [
         'vm',
         'power_state',
-        'os_info',
         'os_family',
-        'os_name',
+        'os_version',
         'key',
         'backing',
         'datastore',
@@ -97,11 +338,9 @@ def analyze_disks(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pa
 
                 info = extract_disks(vm)
 
-                os = dictify_value(vm.config.extraConfig).get('guestOS.detailed.data')
-                if not os:
-                    os = {}
-                os_family = os.get('familyName')
-                os_name = os.get('prettyName')
+                extra_config = dictify_value(vm.config.extraConfig)
+                os_family = get_os_family(extra_config, vm.config.guestFullName)
+                os_version = get_os_version(extra_config)
 
                 mapped_guests: list[vim.vm.GuestInfo.DiskInfo] = []
                 for disk in info.disks:
@@ -111,9 +350,8 @@ def analyze_disks(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pa
                 t_disks_per_vm.append([
                     vm.name, # vm
                     vm.runtime.powerState, # power_state
-                    vm.config.guestFullName, # os_info
-                    os_family, # os_family
-                    os_name, # os_name
+                    os_family,
+                    os_version,
                     len(info.disks), # 'device_disks',
                     len(mapped_guests) + len(info.unmapped_guests), # 'guest_disks',
                     len(mapped_guests), # 'with_mappings',
@@ -147,9 +385,8 @@ def analyze_disks(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pa
                     t_disks.append([
                         vm.name, # vm
                         vm.runtime.powerState, # power_state
-                        vm.config.guestFullName, # os_info
-                        os_family, # os_family
-                        os_name, # os_name
+                        os_family,
+                        os_version,
                         disk.device.key, # key
                         backing_typename, # backing
                         datastore['name'] if datastore else None, # datastore
@@ -170,9 +407,8 @@ def analyze_disks(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pa
                     t_disks.append([
                         vm.name, # vm
                         vm.runtime.powerState, # power_state
-                        vm.config.guestFullName, # os_info
-                        os_family, # os_family
-                        os_name, # os_name
+                        os_family,
+                        os_version,
                         None, # key
                         guest.mappings, # backing
                         None, # datastore
@@ -403,6 +639,22 @@ class VmDisks:
 
         return data
     
+    def to_summary(self):
+        result = ''
+
+        for disk in self.disks:
+            result += (' | ' if result else '') + disk.to_summary()
+
+        if self.unmapped_guests:
+            result += (' | ' if result else '') + f"Unmapped guests ("
+            for i, guest in enumerate(self.unmapped_guests):
+                if i > 0:
+                    result += ', '
+                result += self._get_guest_summary(guest)
+            result += ')'
+
+        return result
+    
     @classmethod
     def _get_guest_dict(cls, guest: vim.vm.GuestInfo.DiskInfo):
         data = {}
@@ -412,6 +664,11 @@ class VmDisks:
         if value := guest.filesystemType:
             data['filesystem'] = value
         return data
+    
+    @classmethod
+    def _get_guest_summary(cls, guest: vim.vm.GuestInfo.DiskInfo):
+        path = guest.diskPath.rstrip(':\\')
+        return f'{path}: {gigi_bytes(guest.freeSpace):.1f}/{gigi_bytes(guest.capacity):.1f} GiB'
 
 
 class VmDisk:
@@ -462,6 +719,25 @@ class VmDisk:
                 data['guests'].append(VmDisks._get_guest_dict(guest))
         
         return data
+    
+    def to_summary(self):
+
+        filename: str = getattr(self.device.backing, 'fileName', None)
+        if filename:
+            identifier = filename
+        else:
+            identifier = f'#{self.device.key}'
+
+        result = f'{identifier}: {gigi_bytes(self.freespace):.1f}/{gigi_bytes(self.capacity):.1f} GiB'
+
+        if self.guests:
+            result += f' ('
+            for i, guest in enumerate(self.guests):
+                if i > 0:
+                    result += ', '
+                result += VmDisks._get_guest_summary(guest)
+            result += ')'
+        return result
 
 #endregion
 
@@ -475,9 +751,8 @@ def analyze_nics(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pat
     nics_per_vm_headers = [
         'vm',
         'power_state',
-        'os_info',
         'os_family',
-        'os_name',
+        'os_version',
         'device_networks',
         'guest_networks',
         'with_mappings',
@@ -490,9 +765,8 @@ def analyze_nics(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pat
     nics_headers = [
         'vm',
         'power_state',
-        'os_info',
         'os_family',
-        'os_name',
+        'os_version',
         'backing',
         'network',
         'address_type',
@@ -514,11 +788,9 @@ def analyze_nics(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pat
 
                 info = extract_nics(vm, vcenter=vcenter)
 
-                os = dictify_value(vm.config.extraConfig).get('guestOS.detailed.data')
-                if not os:
-                    os = {}
-                os_family = os.get('familyName')
-                os_name = os.get('prettyName')
+                extra_config = dictify_value(vm.config.extraConfig)
+                os_family = get_os_family(extra_config, vm.config.guestFullName)
+                os_version = get_os_version(extra_config)
 
                 mapped_guests: list[vim.vm.GuestInfo.NicInfo] = []
                 for nic in info.nics:
@@ -528,9 +800,8 @@ def analyze_nics(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pat
                 t_nics_per_vm.append([
                     vm.name, # vm
                     vm.runtime.powerState, # power_state
-                    vm.config.guestFullName, # os_info
-                    os_family, # os_family
-                    os_name, # os_name
+                    os_family,
+                    os_version,
                     len(info.nics), # 'device_networks',
                     len(mapped_guests) + len(info.unmapped_guests), # 'guest_networks',
                     len(mapped_guests), # 'with_mappings',
@@ -572,9 +843,8 @@ def analyze_nics(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pat
                     t_nics.append([
                         vm.name, # vm
                         vm.runtime.powerState, # power_state
-                        vm.config.guestFullName, # os_info
-                        os_family, # os_family
-                        os_name, # os_name
+                        os_family,
+                        os_version,
                         backing_typename, # backing
                         network,
                         nic.device.addressType, # address_type
@@ -588,9 +858,8 @@ def analyze_nics(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pat
                     t_nics.append([
                         vm.name, # vm
                         vm.runtime.powerState, # power_state
-                        vm.config.guestFullName, # os_info
-                        os_family, # os_family
-                        os_name, # os_name
+                        os_family,
+                        os_version,
                         None, # backing
                         None, # network
                         None, # address_type
@@ -687,16 +956,7 @@ class VmNics:
         names = set()
 
         for nic in self.nics:
-            network = nic.network
-            if isinstance(network, dict):
-                if 'switch' in network:
-                    network['switch'] = network['switch'].name
-                name = ', '.join(f'{key}: {value}' for key, value in network.items())
-            elif network:
-                name = network.name
-            else:
-                name = None
-
+            name = nic.network_name
             if name:
                 names.add(name)
 
@@ -705,8 +965,8 @@ class VmNics:
     def to_dict(self):
         data = []
 
-        for disk in self.nics:
-            data.append(disk.to_dict())
+        for nic in self.nics:
+            data.append(nic.to_dict())
 
         if self.unmapped_guests:
             for guest in self.unmapped_guests:
@@ -714,13 +974,41 @@ class VmNics:
 
         return data
     
+    def to_summary(self, ip_version: int = None):
+        result = ''
+        
+        for nic in self.nics:
+            result += (' | ' if result else '') + nic.to_summary(ip_version=ip_version)
+
+        if self.unmapped_guests:
+            for guest in self.unmapped_guests:
+                result += (' | ' if result else '') + f"unmapped {guest.macAddress.lower()}: {guest.network} (" + VmNics._get_guest_summary(guest, ip_version=ip_version) + ")"
+
+        return result
+    
     @classmethod
     def _get_guest_dict(cls, guest: vim.vm.GuestInfo.NicInfo):
         data = {}
-        data['connected'] = guest.connected
         data['ips'] = guest.ipAddress
+        data['connected'] = guest.connected
         data['network_name'] = guest.network
         return data
+    
+    @classmethod
+    def _get_guest_summary(cls, guest: vim.vm.GuestInfo.NicInfo, ip_version: int = None):        
+        ip_addresses: list[IPv4Address|IPv6Address] = []
+        for ip_str in guest.ipAddress:
+            ip = ip_address(ip_str)
+            if ip_version is None or ip.version == ip_version:
+                ip_addresses.append(ip)
+
+        ip_addresses.sort()
+                
+        result = ''
+        for ip in ip_addresses:
+            result += (', ' if result else '') + ip.compressed
+        result += (', ' if result else '') + ('connected' if guest.connected else 'notConnected')
+        return result
 
 
 class VmNic:
@@ -747,6 +1035,23 @@ class VmNic:
             return self.device.backing.network
         else:
             return None
+        
+    @property
+    def network_name(self):
+        network = self.network
+        if not network:
+            return None
+        elif isinstance(network, (vim.dvs.DistributedVirtualPortgroup, vim.Network)):
+            return network.name
+        elif isinstance(network, dict):
+            result = ''
+            for key, value in network.items():
+                if isinstance(value, vim.ManagedEntity):
+                    value = value.name
+                result += (', ' if result else '') + f"{key}: {value}"
+            return str(network)
+        else:
+            return str(network)
 
     def to_dict(self):
         data = {}
@@ -772,5 +1077,16 @@ class VmNic:
             data['guests'] = [VmNics._get_guest_dict(guest) for guest in self.guests]
         
         return data
+    
+    def to_summary(self, ip_version: int = None):
+        result = f"{self.device.macAddress.lower()}: {self.network_name}"
+        if self.guests:
+            result += " ("
+            for i, guest in enumerate(self.guests):
+                if i > 0:
+                    result += ', '
+                result += VmNics._get_guest_summary(guest, ip_version=ip_version)
+            result += ")"
+        return result
 
 #endregion

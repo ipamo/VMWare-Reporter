@@ -35,12 +35,26 @@ def get_obj_ref(obj: vim.ManagedObject) -> str:
     return m.group(2)
 
 
-def get_obj_path(obj: vim.ManagedEntity) -> str:
-    """ Return the full path of the given vim managed entity. """
+def get_obj_path(obj: vim.ManagedEntity, full: bool = False) -> str:
+    """ Return the path of the given vim managed entity. """
+    if not obj:
+        return None
     if isinstance(obj, vim.Datacenter):
         return obj.name
-    else:
-        return get_obj_path(obj.parent) + "/" + obj.name
+    if not full:
+        if obj.parent:
+            if isinstance(obj.parent, vim.Datacenter):
+                return None            
+            super_parent = obj.parent.parent
+            if isinstance(super_parent, vim.Datacenter):
+                return obj.name
+                
+    if not obj.parent:
+        return obj.name
+    elif not full and isinstance(obj, vim.ResourcePool) and obj.name == 'Resources':
+        return get_obj_path(obj.parent, full=full)
+    else:        
+        return get_obj_path(obj.parent, full=full) + "/" + obj.name
 
 
 def identify_obj(obj: vim.ManagedObject) -> dict:

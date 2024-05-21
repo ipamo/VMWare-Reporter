@@ -37,7 +37,7 @@ def main():
     
 
 def init_parser(prog: str = None, version: str = None, doc: str = None, *, config: ConfigParser = None, section: str = None):
-    parser = ArgumentParser(prog=prog, description=get_help_text(doc), formatter_class=RawTextHelpFormatter, add_help=False, epilog='\n'.join(doc.splitlines()[2:]))
+    parser = ArgumentParser(prog=prog, description=get_help_text(doc), formatter_class=RawTextHelpFormatter, add_help=False, epilog='\n'.join(doc.splitlines()[2:]) if doc else None)
     
     envs = VCenterClient.get_configured_envs(config=config, section=section)
 

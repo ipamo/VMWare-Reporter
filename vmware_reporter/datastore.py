@@ -237,7 +237,7 @@ def request_datastore_resource(method: str, vcenter: VCenterClient, datastore: v
         path = Path(path)
 
     path = "/folder/%s" % path.as_posix()
-    params = {"dsName": datastore_name, "dcPath": get_obj_path(vcenter.datacenter)}
+    params = {"dsName": datastore_name, "dcPath": get_obj_path(vcenter.datacenter, full=True)}
     url = f"https://{vcenter.host}" + path + '?' + urlencode(params)
     
     headers = {}
