@@ -182,13 +182,13 @@ def analyze_datastore_elements(vcenter: VCenterClient, search: list[str|re.Patte
     """
     with out_table(out, headers=DatastoreElement.get_headers(bytes=bytes), title="datastore elements", dir=vcenter.get_out_dir()) as t:
         for obj in vcenter.get_objs(vim.Datastore, search, normalize=normalize, key=key, sort_key='name'):
-            logger.info(f'analyze datastore {obj.name}')
+            logger.info(f'Analyze datastore {obj.name}')
 
             try:
                 for info in sorted(iterate_datastore_elements(vcenter, obj, path=path, max_depth=max_depth), key=lambda info: info.path):
                     t.append(info.as_row())
             except:
-                logger.exception(f'cannot analyze datastore {obj.name}')
+                logger.exception(f'Cannot analyze datastore {obj.name}')
 
 
 def _add_arguments(parser: ArgumentParser):
@@ -207,15 +207,15 @@ def analyze_datastore_stats(vcenter: VCenterClient, search: list[str|re.Pattern]
     """
     Analyze stats about datastore elements (files and directories).
     """
-    with out_table(out, headers=DatastoreStat.get_headers(bytes=bytes), title="datastore elements", dir=vcenter.get_out_dir()) as t:
+    with out_table(out, headers=DatastoreStat.get_headers(bytes=bytes), title="datastore stats", dir=vcenter.get_out_dir()) as t:
         for obj in vcenter.get_objs(vim.Datastore, search, normalize=normalize, key=key, sort_key='name'):
-            logger.info(f'analyze datastore {obj.name}')
+            logger.info(f'Analyze datastore {obj.name}')
 
             try:
                 for info in get_datastore_stats(vcenter, obj, path=path, max_depth=max_depth):
                     t.append(info.as_row())
             except:
-                logger.exception(f'cannot analyze datastore {obj.name}')
+                logger.exception(f'Cannot analyze datastore {obj.name}')
 
 
 def _add_arguments(parser: ArgumentParser):

@@ -53,6 +53,12 @@ vmware-reporter inventory
 vmware-reporter dump
 ```
 
+- Reconfigure VMs (mass operation): copy `templates/vms_reconfigure.xlsx` to `data/vms_reconfigure.xlsx`, fill-in this file, then:
+
+```sh
+vmware-reporter vm reconfigure
+```
+
 Complete help about command-line usage may be displayed by typing:
 
 ```sh

@@ -1,5 +1,5 @@
 """
-Analyze VM disks or NICs.
+Manage virtual machines.
 """
 from __future__ import annotations
 
@@ -12,11 +12,12 @@ import re
 from argparse import ArgumentParser, RawTextHelpFormatter, _SubParsersAction
 from ipaddress import IPv4Address, IPv6Address, ip_address
 from pathlib import Path
-from typing import Literal
+from typing import Any, Callable, Literal
 
 from pyVmomi import vim
 from zut import (Header, add_func_command, get_description_text, get_help_text,
                  gigi_bytes, out_table)
+from zut import slugify
 from zut.excel import openpyxl
 
 from . import VCenterClient
@@ -32,6 +33,7 @@ def add_vm_commands(commands_subparsers: _SubParsersAction[ArgumentParser], *, n
 
     subparsers = parser.add_subparsers(title='Sub commands')
     add_func_command(subparsers, list_vms, name='list')
+    add_func_command(subparsers, reconfigure_vms, name='reconfigure')
     add_func_command(subparsers, analyze_disks, name='disks')
     add_func_command(subparsers, analyze_nics, name='nics')
 
@@ -45,6 +47,8 @@ def list_vms(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern
     headers = [
         'name',
         'ref',
+        'overall_status',
+        'config_status',
         'template',
         # Config
         'vcpu',
@@ -102,6 +106,8 @@ def list_vms(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern
                 t.append([
                     obj.name,
                     get_obj_ref(obj),
+                    obj.overallStatus,
+                    obj.configStatus,
                     obj.config.template,
                     # Config
                     obj.config.hardware.numCPU,
@@ -152,127 +158,221 @@ def _add_arguments(parser: ArgumentParser):
 
 list_vms.add_arguments = _add_arguments
 
-
-def get_tools_version_number(toolsversion: str):
-    if re.match(r'^\d+$', toolsversion):
-        toolsversion = int(toolsversion)
-        if toolsversion == 0 or toolsversion == 2147483647:
-            return None
-        return toolsversion    
-    elif toolsversion:
-        return str(toolsversion)
-    else:
-        return None
+#endregion
 
 
-def get_os_family(extra_config: dict, configured_fullname: str):
-    def get_family_from_configured(fullname: str):
-        if m := re.match(r'^(.+) \(\d\d\-bit\)$', fullname):
-            fullname = m[1]
+#region Reconfigure
+
+DEFAULT_RECONFIGURE_FILE = 'vms_reconfigure.xlsx'
+DEFAULT_RECONFIGURE_TABLE = 'vms_reconfigure'
+
+def reconfigure_vms(vcenter: VCenterClient, file: str|Path = DEFAULT_RECONFIGURE_FILE, tablename: str = DEFAULT_RECONFIGURE_TABLE, top: int = None):
+    """
+    Reconfigure VMs (vcpu, memory, annotation, custom fields) as a mass operation, using an Excel file.
+    """
+    from zut.excel import ExcelWorkbook, ExcelRow
+
+    class Helper:
+        def __init__(self, row: ExcelRow, found: bool = False):
+            self.row = row
+            self.found = found
+
+        def report_ok(self, details: str):
+            logger.info(f"OK: {details}")
+            self.row['status'] = 'OK'
+            self.row['details'] = details
+
+        def report_error(self, details: str):
+            logger.error(details)
+            self.row['status'] = 'ERROR'
+            self.row['details'] = details
             
-        lower_fullname = fullname.lower()
-        if 'windows' in lower_fullname:
-            return "Windows"
-        elif 'linux' in lower_fullname or 'centos' in lower_fullname:
-            return "Linux"
-        elif lower_fullname == 'other':
-            return None
-        else:
-            return fullname
-      
-    if 'guestInfo.detailed.data' in extra_config:
-        line = extra_config['guestInfo.detailed.data']
-        if m := re.match(r".*familyName='([^']+)'.*", line):
-            return m[1]
-    elif 'guestOS.detailed.data' in extra_config:
-        data = extra_config.get("guestOS.detailed.data")
-        if isinstance(data, dict) and 'familyName' in data:
-            return data['familyName']
+    class FieldDef:
+        def __init__(self, name: str, type: type, getter: Callable[[vim.VirtualMachine],Any]|Literal['__customvalue__'], target_key:str|int, target_formatter: Callable[[vim.VirtualMachine],Any] = None):
+            """
+            - `key`: if str, this is the reconfigure ConfigSpec argument to use. If int, this is the customfield key to use.
+            """
+            self.name = name
+            self.type = type
+            self.getter = getter
+            self.target_key = target_key
+            self.target_formatter = target_formatter
 
-    if configured_fullname:
-        return get_family_from_configured(configured_fullname)
+        def get_from_vm(self, vm: vim.VirtualMachine):
+            if self.getter == '__customvalue__':
+                for kv in vm.customValue:
+                    if kv.key == self.target_key:
+                        return kv.value
+            else:
+                return self.getter(vm)
 
-
-
-def get_os_version(extra_config: dict):
-    if 'guestInfo.detailed.data' in extra_config:
-        line = extra_config['guestInfo.detailed.data']
-        if m := re.match(r".*prettyName='([^']+)'.*", line):
-            return m[1]
-        else:
-            return line
-    elif 'guestOS.detailed.data' in extra_config:
-        data = extra_config.get("guestOS.detailed.data")
-        if isinstance(data, dict) and 'prettyName' in data:
-            return data['prettyName']
-        else:
-            return str(data)
-    else:
-        return None
-
-
-def get_os_distro_version(extra_config: dict):
-    if 'guestInfo.detailed.data' in extra_config:
-        line = extra_config['guestInfo.detailed.data']
-        if m := re.match(r".*distroVersion='([^']+)'.*", line):
-            return m[1]
-    if 'guestOS.detailed.data' in extra_config:
-        data = extra_config.get("guestOS.detailed.data")
-        if isinstance(data, dict) and 'distroVersion' in data:
-            return data['distroVersion']
-
-
-def get_os_kernel_version(extra_config: dict):
-    if 'guestInfo.detailed.data' in extra_config:
-        line = extra_config['guestInfo.detailed.data']
-        if m := re.match(r".*kernelVersion='([^']+)'.*", line):
-            return m[1]
-    if 'guestOS.detailed.data' in extra_config:
-        data = extra_config.get("guestOS.detailed.data")
-        if isinstance(data, dict) and 'kernelVersion' in data:
-            return data['kernelVersion']
+        def get_from_row(self, row: ExcelRow, suffix: str):
+            value = row.get(f"{self.name}_{suffix}")
+            if value is None or value == '':
+                return None
+            if self.type == str and value == '-':
+                return ''
+            return self.type(value)
         
+        def format_for_target(self, value):
+            if not self.target_formatter:
+                return value
+            return self.target_formatter(value)
 
-def get_guestinfo_publish_time(extra_config: dict):
-    if not 'guestinfo.appInfo' in extra_config:
-        return
+    fielddefs: list[FieldDef] = [
+        FieldDef('vcpu', int, lambda vm: vm.config.hardware.numCPU, 'numCPUs'),
+        FieldDef('memory', float, lambda vm: vm.config.hardware.memoryMB / 1024.0, 'memoryMB', lambda val: int(val * 1024.0)),
+        FieldDef('annotation', str, lambda vm: vm.config.annotation, 'annotation'),
+    ]
+
+    for customfield in vcenter.service_content.customFieldsManager.field:
+        if customfield.managedObjectType == vim.VirtualMachine:
+            fielddefs.append(FieldDef(customfield.name, str, '__customvalue__', customfield.key))
     
-    appinfo_str = extra_config['guestinfo.appInfo']
-    if not isinstance(appinfo_str, str):
-        return str(appinfo_str)
+    file = str(file).format(env=vcenter.env)
+    if not file.startswith(('./','.\\')):
+        file = os.path.join(vcenter.get_out_dir(), file)
+
+    workbook = ExcelWorkbook(file)
+    table = workbook.get_or_create_table(tablename)
     
-    if appinfo_str == "":
-        return
+    helpers: dict[str,Helper] = {}
+    search_by_ref = 'ref' in table.column_names
+    for row in table:
+        if search_by_ref:
+            if row['ref']:
+                helpers[row['ref']] = Helper(row)
+        else:
+            if row['name']:
+                helpers[slugify(row['name'])] = Helper(row)
+        row['status'] = None
+        row['details'] = None
     
-    try:
-        appinfo = json.loads(appinfo_str)
-    except json.decoder.JSONDecodeError as err:
-        return f"Cannot parse \"{appinfo_str}\": {err}"
+    n = 0
+    for vm in vcenter.iter_objs(vim.VirtualMachine):
+        if top is not None and n == top:
+            logger.warning(f"Stop after {n} VMs")
+            break
 
-    if 'publishTime' in appinfo:
-        return datetime.fromisoformat(appinfo['publishTime'])
-
-
-def get_tools_version(extra_config: dict, version_number: str):
-    if 'guestinfo.vmtools.versionNumber' in extra_config and 'guestinfo.vmtools.description' in extra_config:
-        if extra_config['guestinfo.vmtools.versionNumber'] == version_number:
-            return extra_config['guestinfo.vmtools.description']
-
-
-def get_custom_values(vm: vim.VirtualMachine):
-    available_fields = {}
-    custom_values = {}
-
-    for field in vm.availableField:
-        available_fields[field.key] = field.name
-
-    for value in vm.value:
-        custom_values[available_fields[value.key]] = value.value
+        key = get_obj_ref(vm) if search_by_ref else slugify(vm.name)
+        helper = helpers.get(key)
+        if not helper:
+            continue
         
-    for value in vm.customValue:
-        custom_values[available_fields[value.key]] = value.value
+        if helper.found:
+            logger.error(f"VM {vm.name}: ignore (several VMs with key \"{key}\")")
+            continue
+        helper.found = True
 
-    return custom_values
+        n += 1        
+        logger.info(f"Handle {vm.name} ({get_obj_ref(vm)})")
+        row = helper.row
+
+        try:
+            if search_by_ref and slugify(vm.name) != slugify(row['name']):
+                helper.report_error(f"Invalid VM name: expected {vm.name}")
+                continue
+
+            if vm.config.template:
+                helper.report_error(f"This is a template")
+                continue
+
+            if vm.runtime.powerState != 'poweredOff':
+                helper.report_error(f"Not powered off")
+                continue
+
+            config_previous: dict[str|int,Any] = {}
+            config_targets: dict[str|int,Any] = {}
+            prepare_error = ''
+
+            # Prepare reconfiguration
+            change_version = vm.config.changeVersion  # used to guard against updates that have happened between when configInfo is read and when it is applied
+
+            for fielddef in fielddefs:
+                target = fielddef.get_from_row(row, 'target')
+                if target is None:
+                    continue
+
+                current = fielddef.get_from_vm(vm)
+                current_expected = fielddef.get_from_row(row, 'current')
+                if current_expected is not None:
+                    if current_expected != current:
+                        prepare_error += (', ' if prepare_error else '') + f"current {fielddef.name}: {'(empty)' if current == '' else current}"   
+                        continue
+
+                if target != current:
+                    config_previous[fielddef.target_key] = fielddef.format_for_target(current)
+                    config_targets[fielddef.target_key] = fielddef.format_for_target(target)
+
+            if prepare_error:
+                helper.report_error(f"Invalid {prepare_error}")
+                continue
+
+            if not config_targets:
+                helper.report_ok("Nothing to do")
+                continue
+
+            config_targets_reconfigure = {}
+            config_targets_customfields = {}
+            for key, value in config_targets.items():
+                if isinstance(key, str):
+                    config_targets_reconfigure[key] = value
+                else:
+                    config_targets_customfields[key] = value
+
+            # Perform the reconfiguration
+            if config_targets_reconfigure:
+                logger.debug("Reconfigure VM: %s", config_targets_reconfigure)
+                configspec = vim.vm.ConfigSpec(**config_targets_reconfigure, changeVersion=change_version)
+                task = vm.ReconfigVM_Task(configspec)
+                vcenter.wait_for_task(task)
+
+            for key, value in config_targets_customfields.items():
+                logger.debug("Set custom field %s: %s", key, value)
+                vcenter.service_content.customFieldsManager.SetField(vm, key, value)
+
+            # Verification
+            status_ok = True
+            details = ''
+
+            for fielddef in fielddefs:
+                if not fielddef.target_key in config_targets:
+                    continue # field not modified
+
+                previous_value = config_previous[fielddef.target_key]
+                target_value = config_targets[fielddef.target_key]
+                new_value = fielddef.get_from_vm(vm)
+                details += (', ' if details else '') + f"{fielddef.target_key}: {previous_value} -> {'(empty)' if new_value == '' else new_value}"
+
+                if new_value != target_value:
+                    status_ok = False
+                    details += ' [ERROR]'
+
+            if status_ok:
+                helper.report_ok(details)
+            else:
+                helper.report_error(details)
+        
+        except Exception as err:
+            logger.exception(str(err))
+            row['status'] = type(err).__name__
+            row['details'] = str(err)
+
+    # Report not found
+    for key, helper in helpers.items():
+        if not helper.found:
+            helper.report_error(f"VM {key} not found")
+
+    workbook.close()
+
+
+def _add_arguments(parser: ArgumentParser):
+    parser.add_argument('file', nargs='?', default=DEFAULT_RECONFIGURE_FILE, help="Path to Excel file describing VMs to reconfigure.")
+    parser.add_argument('--table', dest='tablename', default=DEFAULT_RECONFIGURE_TABLE)
+    parser.add_argument('--top', type=int)
+
+reconfigure_vms.add_arguments = _add_arguments
+
 
 #endregion
 
@@ -1090,3 +1190,125 @@ class VmNic:
         return result
 
 #endregion
+
+
+def get_tools_version_number(toolsversion: str):
+    if re.match(r'^\d+$', toolsversion):
+        toolsversion = int(toolsversion)
+        if toolsversion == 0 or toolsversion == 2147483647:
+            return None
+        return toolsversion    
+    elif toolsversion:
+        return str(toolsversion)
+    else:
+        return None
+
+
+def get_os_family(extra_config: dict, configured_fullname: str):
+    def get_family_from_configured(fullname: str):
+        if m := re.match(r'^(.+) \(\d\d\-bit\)$', fullname):
+            fullname = m[1]
+            
+        lower_fullname = fullname.lower()
+        if 'windows' in lower_fullname:
+            return "Windows"
+        elif 'linux' in lower_fullname or 'centos' in lower_fullname:
+            return "Linux"
+        elif lower_fullname == 'other':
+            return None
+        else:
+            return fullname
+      
+    if 'guestInfo.detailed.data' in extra_config:
+        line = extra_config['guestInfo.detailed.data']
+        if m := re.match(r".*familyName='([^']+)'.*", line):
+            return m[1]
+    elif 'guestOS.detailed.data' in extra_config:
+        data = extra_config.get("guestOS.detailed.data")
+        if isinstance(data, dict) and 'familyName' in data:
+            return data['familyName']
+
+    if configured_fullname:
+        return get_family_from_configured(configured_fullname)
+
+
+
+def get_os_version(extra_config: dict):
+    if 'guestInfo.detailed.data' in extra_config:
+        line = extra_config['guestInfo.detailed.data']
+        if m := re.match(r".*prettyName='([^']+)'.*", line):
+            return m[1]
+        else:
+            return line
+    elif 'guestOS.detailed.data' in extra_config:
+        data = extra_config.get("guestOS.detailed.data")
+        if isinstance(data, dict) and 'prettyName' in data:
+            return data['prettyName']
+        else:
+            return str(data)
+    else:
+        return None
+
+
+def get_os_distro_version(extra_config: dict):
+    if 'guestInfo.detailed.data' in extra_config:
+        line = extra_config['guestInfo.detailed.data']
+        if m := re.match(r".*distroVersion='([^']+)'.*", line):
+            return m[1]
+    if 'guestOS.detailed.data' in extra_config:
+        data = extra_config.get("guestOS.detailed.data")
+        if isinstance(data, dict) and 'distroVersion' in data:
+            return data['distroVersion']
+
+
+def get_os_kernel_version(extra_config: dict):
+    if 'guestInfo.detailed.data' in extra_config:
+        line = extra_config['guestInfo.detailed.data']
+        if m := re.match(r".*kernelVersion='([^']+)'.*", line):
+            return m[1]
+    if 'guestOS.detailed.data' in extra_config:
+        data = extra_config.get("guestOS.detailed.data")
+        if isinstance(data, dict) and 'kernelVersion' in data:
+            return data['kernelVersion']
+        
+
+def get_guestinfo_publish_time(extra_config: dict):
+    if not 'guestinfo.appInfo' in extra_config:
+        return
+    
+    appinfo_str = extra_config['guestinfo.appInfo']
+    if not isinstance(appinfo_str, str):
+        return str(appinfo_str)
+    
+    if appinfo_str == "":
+        return
+    
+    try:
+        appinfo = json.loads(appinfo_str)
+    except json.decoder.JSONDecodeError as err:
+        return f"Cannot parse \"{appinfo_str}\": {err}"
+
+    if 'publishTime' in appinfo:
+        return datetime.fromisoformat(appinfo['publishTime'])
+
+
+def get_tools_version(extra_config: dict, version_number: str):
+    if 'guestinfo.vmtools.versionNumber' in extra_config and 'guestinfo.vmtools.description' in extra_config:
+        if extra_config['guestinfo.vmtools.versionNumber'] == version_number:
+            return extra_config['guestinfo.vmtools.description']
+
+
+def get_custom_values(vm: vim.VirtualMachine):
+    available_fields = {}
+    custom_values = {}
+
+    for field in vm.availableField:
+        available_fields[field.key] = field.name
+
+    for value in vm.value:
+        custom_values[available_fields[value.key]] = value.value
+        
+    for value in vm.customValue:
+        custom_values[available_fields[value.key]] = value.value
+
+    return custom_values

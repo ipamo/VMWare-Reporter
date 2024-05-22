@@ -10,16 +10,17 @@ from argparse import ArgumentParser, RawTextHelpFormatter, _SubParsersAction
 from contextlib import nullcontext
 from types import FunctionType
 
-from zut import (OutTable, add_func_command, configure_logging, exec_command,
+from zut import (OutTable, add_func_command, add_module_command, configure_logging, exec_command,
                  get_help_text, register_locale)
 
-from . import VCenterClient, __prog__, __version__
+from . import VCenterClient, __prog__, __version__, customfield
 from .datastore import add_datastore_commands
 from .dump import dump
-from .extract import handle as extract_handle
 from .inventory import export_inventory
-from .networking import add_networking_commands
+from .extract import handle as extract_handle
+from .host import add_host_commands
 from .vm import add_vm_commands
+from .networking import add_networking_commands
 
 logger = logging.getLogger(__name__)
 
@@ -52,11 +53,15 @@ def init_parser(prog: str = None, version: str = None, doc: str = None, *, confi
 def add_commands(subparsers: _SubParsersAction[ArgumentParser]):
     add_func_command(subparsers, export_inventory, name='inventory')
     add_func_command(subparsers, dump, name='dump')
+
     add_func_command(subparsers, extract_handle, name='extract')
-    
+        
     add_datastore_commands(subparsers, name='datastore')
     add_networking_commands(subparsers, name='networking')
+    add_host_commands(subparsers, name='host')
     add_vm_commands(subparsers, name='vm')
+
+    add_module_command(subparsers, customfield)
         
 
 def get_vcenter(handle: FunctionType, args: dict, *, config: ConfigParser = None, section: str = None):
