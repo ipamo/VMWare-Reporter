@@ -19,9 +19,9 @@ def add_networking_commands(commands_subparsers: _SubParsersAction[ArgumentParse
     add_func_command(commands_subparsers, analyze_networks, name=name, doc=__doc__)
 
 
-DEFAULT_OUT = 'networking.xlsx#{title}' if openpyxl else 'networking-{title}.csv'
+_DEFAULT_OUT = 'networking.xlsx#{title}' if openpyxl else 'networking-{title}.csv'
 
-def analyze_networks(vcenter: VCenterClient, *, out: str = DEFAULT_OUT):
+def analyze_networks(vcenter: VCenterClient, *, out: str = _DEFAULT_OUT):
     with out_table(out, title='switchs', dir=vcenter.get_out_dir()) as t:
         for obj in vcenter.iter_objs(vim.DistributedVirtualSwitch):
             uplinks = []
@@ -66,7 +66,7 @@ def analyze_networks(vcenter: VCenterClient, *, out: str = DEFAULT_OUT):
 
 
 def _add_arguments(parser: ArgumentParser):
-    parser.add_argument('-o', '--out', default=DEFAULT_OUT, help="Output Excel or CSV file (default: %(default)s).")
+    parser.add_argument('-o', '--out', default=_DEFAULT_OUT, help="Output Excel or CSV file (default: %(default)s).")
 
 analyze_networks.add_arguments = _add_arguments
 

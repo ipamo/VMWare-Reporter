@@ -22,7 +22,7 @@ from zut.excel import openpyxl
 
 from . import VCenterClient, dictify_obj, dictify_value, get_obj_ref, get_obj_path
 
-logger = logging.getLogger(__name__)
+_logger = logging.getLogger(__name__)
 
 def add_host_commands(commands_subparsers: _SubParsersAction[ArgumentParser], *, name: str):
     parser = commands_subparsers.add_parser(name, help=get_help_text(__doc__), description=get_description_text(__doc__), formatter_class=RawTextHelpFormatter, add_help=False)
@@ -34,12 +34,12 @@ def add_host_commands(commands_subparsers: _SubParsersAction[ArgumentParser], *,
     add_func_command(subparsers, list_hosts, name='list')
 
 
-DEFAULT_OUT = 'hosts.xlsx#{title}' if openpyxl else 'hosts-{title}.csv'
+_DEFAULT_OUT = 'hosts.xlsx#{title}' if openpyxl else 'hosts-{title}.csv'
 
 
 #region List
 
-def list_hosts(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern = None, *, normalize: bool = False, key: str = 'name', out: os.PathLike|IOBase = DEFAULT_OUT):
+def list_hosts(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern = None, *, normalize: bool = False, key: str = 'name', out: os.PathLike|IOBase = _DEFAULT_OUT):
     headers = [
         'name',
         'ref',
@@ -61,7 +61,7 @@ def list_hosts(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Patte
     with out_table(out, title='hosts', dir=vcenter.get_out_dir(), headers=headers, after1970=True) as t:
         for obj in vcenter.iter_objs(vim.HostSystem, search, normalize=normalize, key=key):  
             try:
-                logger.info(f"Analyze {obj.name}")
+                _logger.info(f"Analyze {obj.name}")
 
                 oii = dictify_value(obj.hardware.systemInfo.otherIdentifyingInfo)
 
@@ -84,14 +84,14 @@ def list_hosts(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Patte
                 ])
             
             except Exception as err:
-                logger.exception(f"Error while analyzing {str(obj)}")
+                _logger.exception(f"Error while analyzing {str(obj)}")
 
 
 def _add_arguments(parser: ArgumentParser):
     parser.add_argument('search', nargs='*', help="Search term(s).")
     parser.add_argument('-n', '--normalize', action='store_true', help="Normalise search term(s).")
     parser.add_argument('-k', '--key', choices=['name', 'ref'], default='name', help="Search key (default: %(default)s).")
-    parser.add_argument('-o', '--out', default=DEFAULT_OUT, help="Output table (default: %(default)s).")
+    parser.add_argument('-o', '--out', default=_DEFAULT_OUT, help="Output table (default: %(default)s).")
 
 list_hosts.add_arguments = _add_arguments
 

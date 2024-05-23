@@ -12,7 +12,7 @@ API reference
     vmware_reporter
     vmware_reporter.datastore
     vmware_reporter.dump
-    vmware_reporter.extract
+    vmware_reporter.host
     vmware_reporter.inventory
     vmware_reporter.networking
     vmware_reporter.vm

@@ -9,12 +9,12 @@ from io import IOBase
 
 from . import VCenterClient, get_obj_ref, dump_obj
 
-logger = logging.getLogger(__name__)
+_logger = logging.getLogger(__name__)
 
-DEFAULT_OUT = os.path.join("dumps", "{type}", "{name} ({ref}).json")
+_DEFAULT_OUT = os.path.join("dumps", "{type}", "{name} ({ref}).json")
 
 
-def dump(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern = None, *, normalize: bool = False, key: str = 'name', first: bool = False, types: list[type|str]|type|str = None, out: os.PathLike|IOBase = DEFAULT_OUT):
+def dump(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern = None, *, normalize: bool = False, key: str = 'name', first: bool = False, types: list[type|str]|type|str = None, out: os.PathLike|IOBase = _DEFAULT_OUT):
     """
     Export all available data about VMWare managed objects to JSON files.
     """
@@ -57,6 +57,6 @@ def _add_arguments(parser: ArgumentParser):
     parser.add_argument('-k', '--key', choices=['name', 'ref'], default='name', help="Search key (default: %(default)s).")
     parser.add_argument('-t', '--type', dest='types', metavar='type', help="Managed object type name (example: datastore).")
     parser.add_argument('--first', action='store_true', help="Only handle the first object found for each type.")
-    parser.add_argument('-o', '--out', default=DEFAULT_OUT, help="Output JSON file (default: %(default)s).")
+    parser.add_argument('-o', '--out', default=_DEFAULT_OUT, help="Output JSON file (default: %(default)s).")
 
 dump.add_arguments = _add_arguments

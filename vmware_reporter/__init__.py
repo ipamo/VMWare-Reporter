@@ -1,24 +1,26 @@
 from __future__ import annotations
 
-from contextlib import nullcontext
-from datetime import date
-from io import IOBase
 import json
 import logging
 import os
 import re
 from collections.abc import Callable, Iterator
 from configparser import ConfigParser
+from contextlib import nullcontext
+from datetime import date
 from inspect import signature
+from io import IOBase
 from pathlib import Path
-from types import BuiltinFunctionType, BuiltinMethodType, FunctionType, MethodType
+from types import (BuiltinFunctionType, BuiltinMethodType, FunctionType,
+                   MethodType)
 from typing import Any, Literal, TypeVar, overload
 from uuid import UUID
 
 from pyVim.connect import Disconnect, SmartConnect
 from pyVmomi import vim, vmodl
 from pyVmomi.VmomiSupport import _managedDefMap
-from zut import ExtendedJSONEncoder, Filters, MessageError, get_config, resolve_host, iter_dicts_from_csv
+from zut import (ExtendedJSONEncoder, Filters, MessageError, get_config,
+                 iter_dicts_from_csv, resolve_host)
 from zut.excel import ExcelWorkbook, is_excel_path, split_excel_path
 
 import vmware_reporter
@@ -32,7 +34,7 @@ except ImportError:
     __version__ = None
     __version_tuple__ = None
 
-logger = logging.getLogger(__name__)
+_logger = logging.getLogger(__name__)
 
 T_Obj = TypeVar('T_Obj', bound=vim.ManagedEntity)
 
@@ -743,7 +745,7 @@ def dictify_obj(obj: vim.ManagedEntity, *, object_types=False, exclude_keys=[], 
             except: # problem getting the data (e.g. invalid/not-supported accessor)
                 _key = keypath_str()
                 if _key not in ['configManagerEnabled', 'environmentBrowser']:
-                    logger.error('Cannot read attribute: %s', _key)
+                    _logger.error('Cannot read attribute: %s', _key)
                 value = "!error:cannot_read"
             
             value = handle_any(value)
@@ -812,7 +814,7 @@ def dictify_obj(obj: vim.ManagedEntity, *, object_types=False, exclude_keys=[], 
                 return identify_obj(data)
 
         elif max_depth and len(keypath) >= max_depth:
-            logger.error('Reached max depth: %s', type(data).__name__)
+            _logger.error('Reached max depth: %s', type(data).__name__)
             return f"!error:max_depth({type(data).__name__})"
 
         elif isinstance(data, dict):
@@ -840,11 +842,12 @@ def dump_obj(obj: vim.ManagedObject, obj_out: os.PathLike|IOBase, *, title: str 
 
     data = dictify_obj(obj)
 
-    logger.info(f"Export {title} to {out_name}")
+    _logger.info(f"Export {title} to {out_name}")
     with nullcontext(obj_out) if isinstance(obj_out, IOBase) else open(obj_out, 'w', encoding='utf-8') as fp:
         json.dump(data, fp=fp, indent=4, cls=ExtendedJSONEncoder, ensure_ascii=False)
 
 
+# For docs
 __all__ = (
     '__prog__', '__version__', '__version_tuple__',
     'VCenterClient',

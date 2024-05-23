@@ -11,12 +11,12 @@ from pyVmomi import vim
 
 from . import VCenterClient, get_obj_ref
 
-logger = logging.getLogger(__name__)
+_logger = logging.getLogger(__name__)
 
-DEFAULT_OUT = "inventory.yml"
+_DEFAULT_OUT = "inventory.yml"
 
 
-def export_inventory(vcenter: VCenterClient, assets: list[str] = None, out: os.PathLike|IOBase = DEFAULT_OUT):
+def export_inventory(vcenter: VCenterClient, assets: list[str] = None, out: os.PathLike|IOBase = _DEFAULT_OUT):
     """
     Export inventory of VMWare managed objects to a YAML file.
     """
@@ -33,12 +33,12 @@ def export_inventory(vcenter: VCenterClient, assets: list[str] = None, out: os.P
         out = os.path.join(vcenter.get_out_dir(), out)
         out_name = str(out)
         
-    logger.info(f"export inventory to {out_name}")
+    _logger.info(f"export inventory to {out_name}")
     inventory.to_yaml(out)
 
 
 def _add_arguments(parser: ArgumentParser):
-    parser.add_argument('-o', '--out', default=DEFAULT_OUT, help="Output YAML file (default: %(default)s).")
+    parser.add_argument('-o', '--out', default=_DEFAULT_OUT, help="Output YAML file (default: %(default)s).")
     parser.add_argument('--asset', nargs='*', dest='assets')
 
 export_inventory.add_arguments = _add_arguments
@@ -52,19 +52,19 @@ def build_inventory(vcenter: VCenterClient, assets: list[str] = None) -> Invento
 
     for asset in assets:
         if asset == 'folder':
-            logger.info(f"build folder inventory")
+            _logger.info(f"build folder inventory")
             build_folder_inventory(vcenter, parent=node)
             
         elif asset == 'authorization':
-            logger.info(f"build authorization inventory")
+            _logger.info(f"build authorization inventory")
             build_authorization_inventory(vcenter, parent=node)
         
         elif asset == 'license':
-            logger.info(f"build license inventory")
+            _logger.info(f"build license inventory")
             build_license_inventory(vcenter, parent=node)
 
         else:
-            logger.error(f"Unknown asset: {asset}")
+            _logger.error(f"Unknown asset: {asset}")
 
     return node
 
