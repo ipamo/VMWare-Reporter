@@ -1,43 +1,72 @@
 """
-Analyze networks.
-
-List switchs (`vim.dvs.DistributedVirtualSwitch` objects) and networks (`vim.Network` and `vim.dvs.DistributedVirtualPortgroup` objects).
+Analyze networking.
 """
 from __future__ import annotations
 
 import re
-from argparse import ArgumentParser, _SubParsersAction
+from argparse import ArgumentParser, RawTextHelpFormatter, _SubParsersAction
 
 from pyVmomi import vim
-from zut import add_func_command, out_table
-from zut.excel import openpyxl
+from zut import add_func_command, out_table, get_help_text, get_description_text
 
 from . import VCenterClient, get_obj_ref
 
 
-def add_networking_commands(commands_subparsers: _SubParsersAction[ArgumentParser], *, name: str):
-    add_func_command(commands_subparsers, analyze_networks, name=name, doc=__doc__)
+def add_net_commands(commands_subparsers: _SubParsersAction[ArgumentParser], *, name: str):
+    parser = commands_subparsers.add_parser(name, help=get_help_text(__doc__), description=get_description_text(__doc__), formatter_class=RawTextHelpFormatter, add_help=False)
+
+    group = parser.add_argument_group(title='Command options')
+    group.add_argument('-h', '--help', action='help', help=f"Show this command help message and exit.")
+
+    subparsers = parser.add_subparsers(title='Sub commands')
+    add_func_command(subparsers, list_nets, name='list')
 
 
-_DEFAULT_OUT = 'networking.xlsx#{title}' if openpyxl else 'networking-{title}.csv'
+_DEFAULT_OUT = '{title}.csv'
 
-def analyze_networks(vcenter: VCenterClient, *, out: str = _DEFAULT_OUT):
-    with out_table(out, title='switchs', dir=vcenter.get_out_dir()) as t:
+def list_nets(vcenter: VCenterClient, *, out: str = _DEFAULT_OUT):
+    """
+    List switchs (`vim.dvs.DistributedVirtualSwitch` objects) and networks (`vim.Network` and `vim.dvs.DistributedVirtualPortgroup` objects).
+    """
+    switchs_headers = [
+        'name',
+        'ref',
+        'overall_status',
+        'config_status',
+        'uuid',
+        'uplinks',
+        'default_vlan',
+    ]
+
+    with out_table(out, title='switchs', dir=vcenter.get_out_dir(), env=vcenter.env, headers=switchs_headers) as t:
         for obj in vcenter.iter_objs(vim.DistributedVirtualSwitch):
             uplinks = []
             for portgroup in obj.config.uplinkPortgroup:
                 uplink = portgroup.name
                 uplinks.append(uplink)
 
-            t.append({
-                'ref': get_obj_ref(obj),
-                'name': obj.name,
-                'uuid': obj.uuid,
-                'uplinks': uplinks,
-                'default_vlan': _vlan_repr(obj.config.defaultPortConfig.vlan),
-            })
+            t.append([
+                obj.name,
+                get_obj_ref(obj),
+                obj.overallStatus,
+                obj.configStatus,
+                obj.uuid,
+                uplinks,
+                _vlan_repr(obj.config.defaultPortConfig.vlan),
+            ])
 
-    with out_table(out, title='networks', dir=vcenter.get_out_dir()) as t:
+    networks_headers = [
+        'name',
+        'ref',
+        'overall_status',
+        'config_status',
+        'type',
+        'switch',
+        'ports',
+        'default_vlan',
+    ]
+
+    with out_table(out, title='networks', dir=vcenter.get_out_dir(), env=vcenter.env, headers=networks_headers) as t:
         for obj in sorted(vcenter.iter_objs(vim.Network), key=_network_sortkey):
             if isinstance(obj, vim.dvs.DistributedVirtualPortgroup):
                 typename = 'DVP'
@@ -55,20 +84,22 @@ def analyze_networks(vcenter: VCenterClient, *, out: str = _DEFAULT_OUT):
                 vlan = None
                 ports = None
 
-            t.append({
-                'ref': get_obj_ref(obj),
-                'name': obj.name,
-                'type': typename,
-                'switch': switch,
-                'ports': ports,
-                'default_vlan': _vlan_repr(vlan),
-            })
+            t.append([
+                obj.name,
+                get_obj_ref(obj),
+                obj.overallStatus,
+                obj.configStatus,
+                typename,
+                switch,
+                ports,
+                _vlan_repr(vlan),
+            ])
 
 
 def _add_arguments(parser: ArgumentParser):
     parser.add_argument('-o', '--out', default=_DEFAULT_OUT, help="Output Excel or CSV file (default: %(default)s).")
 
-analyze_networks.add_arguments = _add_arguments
+list_nets.add_arguments = _add_arguments
 
 
 def _network_sortkey(obj: vim.Network):

@@ -19,11 +19,11 @@ from uuid import UUID
 from pyVim.connect import Disconnect, SmartConnect
 from pyVmomi import vim, vmodl
 from pyVmomi.VmomiSupport import _managedDefMap
-from zut import (ExtendedJSONEncoder, Filters, MessageError, get_config,
+from zut import (ExtendedJSONEncoder, Filters, MessageError,
                  iter_dicts_from_csv, resolve_host)
 from zut.excel import ExcelWorkbook, is_excel_path, split_excel_path
 
-import vmware_reporter
+from .settings import CONFIG, CONFIG_SECTION
 
 __prog__ = 'vmware-reporter'
 
@@ -56,9 +56,9 @@ class VCenterClient:
         :param password: Password of the vCenter user having access to the API.
         """        
         if not config:
-            config = get_config(vmware_reporter)
+            config = CONFIG
         if not section:
-            section = __prog__
+            section = CONFIG_SECTION
         
         if not env:
             envs = VCenterClient.get_configured_envs(config=config, section=section)
@@ -328,7 +328,7 @@ class VCenterClient:
         - `tasks`: a task, a list of tasks, or a dict associating task to log prefixes.
         """
         task_list: list[vim.Task] = []
-        log_prefixes: dict[vim.Task,Any] = None
+        log_prefixes: dict[vim.Task,Any] = {}
         if isinstance(tasks, dict):
             log_prefixes = tasks
             for task in tasks.keys():
@@ -340,8 +340,8 @@ class VCenterClient:
                 if not isinstance(task, vim.Task):
                     raise TypeError(f"Invalid list element: {task} (type {type(task).__name__}, expected vim.Task)")
                 task_list.append(task)
-        elif isinstance(task, vim.Task):
-            task_list.append(task)
+        elif isinstance(tasks, vim.Task):
+            task_list.append(tasks)
         else:
             raise TypeError(f"Invalid argument: {task} (type {type(task).__name__}, expected vim.Task)")
         
@@ -408,9 +408,9 @@ class VCenterClient:
     @classmethod
     def get_configured_envs(cls, *, config: ConfigParser = None, section: str = None):
         if not config:
-            config = get_config(vmware_reporter)
+            config = CONFIG
         if not section:
-            section = __prog__
+            section = CONFIG_SECTION
         
         envs: list[str] = []
         for _section in config.sections():

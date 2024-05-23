@@ -54,7 +54,6 @@ def command(handle = None):
 @command
 def build():
     clean()
-    #TODO test()
     wheel()
 
 

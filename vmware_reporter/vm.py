@@ -3,26 +3,28 @@ Manage virtual machines.
 """
 from __future__ import annotations
 
-from datetime import datetime
-from io import IOBase
 import json
 import logging
 import os
 import re
 from argparse import ArgumentParser, RawTextHelpFormatter, _SubParsersAction
+from datetime import datetime
+from io import IOBase
 from ipaddress import IPv4Address, IPv6Address, ip_address
 from pathlib import Path
 from typing import Any, Callable, Literal
 
 from pyVmomi import vim
 from zut import (Header, add_func_command, get_description_text, get_help_text,
-                 gigi_bytes, out_table)
-from zut import slugify
-from zut.excel import openpyxl
+                 gigi_bytes, out_table, slugify)
+from zut.excel import ExcelRow, ExcelWorkbook, split_excel_path
 
-from . import VCenterClient, dictify_obj, dictify_value, get_obj_ref, get_obj_path
+from . import (VCenterClient, dictify_obj, dictify_value, get_obj_path,
+               get_obj_ref)
 
 logger = logging.getLogger(__name__)
+
+_DEFAULT_OUT = '{title}.csv'
 
 def add_vm_commands(commands_subparsers: _SubParsersAction[ArgumentParser], *, name: str):
     parser = commands_subparsers.add_parser(name, help=get_help_text(__doc__), description=get_description_text(__doc__), formatter_class=RawTextHelpFormatter, add_help=False)
@@ -32,22 +34,19 @@ def add_vm_commands(commands_subparsers: _SubParsersAction[ArgumentParser], *, n
 
     subparsers = parser.add_subparsers(title='Sub commands')
     add_func_command(subparsers, list_vms, name='list')
-    add_func_command(subparsers, analyze_disks, name='disks')
-    add_func_command(subparsers, analyze_nics, name='nics')
+    add_func_command(subparsers, list_vm_disks, name='disks')
+    add_func_command(subparsers, list_vm_nics, name='nics')
     
     # Operations
     add_func_command(subparsers, start_vms, name='start')
     add_func_command(subparsers, stop_vms, name='stop')
     add_func_command(subparsers, suspend_vms, name='suspend')    
     add_func_command(subparsers, reconfigure_vms, name='reconfigure')
-   
-
-DEFAULT_OUT = 'vms.xlsx#{title}' if openpyxl else 'vms-{title}.csv'
 
 
 #region List
 
-def list_vms(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern = None, *, normalize: bool = False, key: str = 'name', out: os.PathLike|IOBase = DEFAULT_OUT):
+def list_vms(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern = None, *, normalize: bool = False, key: str = 'name', out: os.PathLike|IOBase = _DEFAULT_OUT):
     headers = [
         'name',
         'ref',
@@ -56,6 +55,7 @@ def list_vms(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern
         'template',
         # Config
         'vcpu',
+        'cores_per_socket',
         Header('memory', fmt='gib'),
         Header('disk_capacity', fmt='gib'),
         Header('disk_freespace', fmt='gib'),
@@ -63,7 +63,8 @@ def list_vms(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern
         'nic_count',
         # Dossier / rangement
         'folder',
-        'assignment',
+        'Appartenance',
+        'other_custom_values',
         'annotation',
         'create_date',
         'change_date',
@@ -91,19 +92,17 @@ def list_vms(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern
         'guestinfo_publish_time',
     ]
 
-    with out_table(out, title='vms', dir=vcenter.get_out_dir(), headers=headers, after1970=True) as t:
+    with out_table(out, title='vms', dir=vcenter.get_out_dir(), env=vcenter.env, headers=headers, after1970=True) as t:
         for obj in vcenter.iter_objs(vim.VirtualMachine, search, normalize=normalize, key=key):  
             try:
-                logger.info(f"Analyze {obj.name}")
+                logger.info(f"Analyze vm {obj.name}")
 
                 disks = extract_disks(obj)
                 nics = extract_nics(obj, vcenter=vcenter)
 
                 custom_values = get_custom_values(obj)
-                assignment = custom_values.pop('Appartenance', None)
-                annotations = obj.config.annotation
-                for key, value in custom_values.items():
-                    annotations += (' | ' if annotations else '') + f"{key}: {value}"
+                Appartenance = custom_values.pop('Appartenance', None)
+                other_custom_values = ' | '.join(f"{key}: {value}" for key, value in custom_values.items())
 
                 extra_config = dictify_value(obj.config.extraConfig)
 
@@ -115,6 +114,7 @@ def list_vms(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern
                     obj.config.template,
                     # Config
                     obj.config.hardware.numCPU,
+                    obj.config.hardware.numCoresPerSocket,
                     obj.config.hardware.memoryMB * 1024 * 1024,
                     disks.capacity,
                     disks.freespace,
@@ -122,8 +122,9 @@ def list_vms(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern
                     obj.summary.config.numEthernetCards,
                     # Dossier / rangement
                     get_obj_path(obj.parent),
-                    assignment,
-                    annotations,
+                    Appartenance,
+                    other_custom_values,
+                    obj.config.annotation,
                     obj.config.createDate,
                     datetime.fromisoformat(obj.config.changeVersion),
                     # Config details
@@ -158,7 +159,7 @@ def _add_arguments(parser: ArgumentParser):
     parser.add_argument('search', nargs='*', help="Search term(s).")
     parser.add_argument('-n', '--normalize', action='store_true', help="Normalise search term(s).")
     parser.add_argument('-k', '--key', choices=['name', 'ref'], default='name', help="Search key (default: %(default)s).")
-    parser.add_argument('-o', '--out', default=DEFAULT_OUT, help="Output table (default: %(default)s).")
+    parser.add_argument('-o', '--out', default=_DEFAULT_OUT, help="Output table (default: %(default)s).")
 
 list_vms.add_arguments = _add_arguments
 
@@ -217,14 +218,12 @@ def _invoke_and_track(op: str, vcenter: VCenterClient, search: list[str|re.Patte
 #region Reconfigure
 
 DEFAULT_RECONFIGURE_FILE = 'vms_reconfigure.xlsx'
-DEFAULT_RECONFIGURE_TABLE = 'vms_reconfigure'
+DEFAULT_RECONFIGURE_TABLE = 'vms'
 
-def reconfigure_vms(vcenter: VCenterClient, path: str|Path = DEFAULT_RECONFIGURE_FILE, top: int = None):
+def reconfigure_vms(vcenter: VCenterClient, path: str|Path = DEFAULT_RECONFIGURE_FILE, top: int = None, ignore_invalid_current: bool = False):
     """
     Reconfigure VMs (vcpu, memory, annotation, custom fields) as a mass operation, using an Excel file.
     """
-    from zut.excel import ExcelWorkbook, ExcelRow, split_excel_path
-
     class Helper:
         def __init__(self, row: ExcelRow, found: bool = False):
             self.row = row
@@ -259,8 +258,8 @@ def reconfigure_vms(vcenter: VCenterClient, path: str|Path = DEFAULT_RECONFIGURE
             else:
                 return self.getter(vm)
 
-        def get_from_row(self, row: ExcelRow, suffix: str):
-            value = row.get(f"{self.name}_{suffix}")
+        def get_from_row(self, row: ExcelRow, suffix: str = None):
+            value = row.get(f"{self.name}_{suffix}" if suffix else self.name)
             if value is None or value == '':
                 return None
             if self.type == str and value == '-':
@@ -282,7 +281,7 @@ def reconfigure_vms(vcenter: VCenterClient, path: str|Path = DEFAULT_RECONFIGURE
         if customfield.managedObjectType == vim.VirtualMachine:
             fielddefs.append(FieldDef(customfield.name, str, '__customvalue__', customfield.key))
     
-    path, tablename = split_excel_path(path, default_table_name=DEFAULT_RECONFIGURE_TABLE, dir=vcenter.get_out_dir())
+    path, tablename = split_excel_path(path, default_table_name=DEFAULT_RECONFIGURE_TABLE, dir=vcenter.get_out_dir(), env=vcenter.env)
 
     workbook = ExcelWorkbook(path)
     table = workbook.get_or_create_table(tablename)
@@ -334,7 +333,7 @@ def reconfigure_vms(vcenter: VCenterClient, path: str|Path = DEFAULT_RECONFIGURE
 
             config_previous: dict[str|int,Any] = {}
             config_targets: dict[str|int,Any] = {}
-            prepare_error = ''
+            invalid_current = ''
 
             # Prepare reconfiguration
             change_version = vm.config.changeVersion  # used to guard against updates that have happened between when configInfo is read and when it is applied
@@ -345,18 +344,18 @@ def reconfigure_vms(vcenter: VCenterClient, path: str|Path = DEFAULT_RECONFIGURE
                     continue
 
                 current = fielddef.get_from_vm(vm)
-                current_expected = fielddef.get_from_row(row, 'current')
+                current_expected = fielddef.get_from_row(row)
                 if current_expected is not None:
-                    if current_expected != current:
-                        prepare_error += (', ' if prepare_error else '') + f"current {fielddef.name}: {'(empty)' if current == '' else current}"   
+                    if current_expected != current and not ignore_invalid_current:
+                        invalid_current += (', ' if invalid_current else '') + f"current {fielddef.name}: {'(empty)' if current == '' else current}"   
                         continue
 
                 if target != current:
                     config_previous[fielddef.target_key] = fielddef.format_for_target(current)
                     config_targets[fielddef.target_key] = fielddef.format_for_target(target)
 
-            if prepare_error:
-                helper.report_error(f"Invalid {prepare_error}")
+            if invalid_current:
+                helper.report_error(f"Invalid {invalid_current}")
                 continue
 
             if not config_targets:
@@ -392,7 +391,7 @@ def reconfigure_vms(vcenter: VCenterClient, path: str|Path = DEFAULT_RECONFIGURE
 
                 previous_value = config_previous[fielddef.target_key]
                 target_value = config_targets[fielddef.target_key]
-                new_value = fielddef.get_from_vm(vm)
+                new_value = fielddef.format_for_target(fielddef.get_from_vm(vm))
                 details += (', ' if details else '') + f"{fielddef.target_key}: {previous_value} -> {'(empty)' if new_value == '' else new_value}"
 
                 if new_value != target_value:
@@ -420,6 +419,7 @@ def reconfigure_vms(vcenter: VCenterClient, path: str|Path = DEFAULT_RECONFIGURE
 def _add_arguments(parser: ArgumentParser):
     parser.add_argument('path', nargs='?', default=DEFAULT_RECONFIGURE_FILE, help="Path to Excel file describing VMs to reconfigure.")
     parser.add_argument('--top', type=int)
+    parser.add_argument('--ignore-invalid-current', action='store_true')
 
 reconfigure_vms.add_arguments = _add_arguments
 
@@ -429,7 +429,7 @@ reconfigure_vms.add_arguments = _add_arguments
 
 #region Disks
 
-def analyze_disks(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern = None, *, normalize: bool = False, key: str = 'name', out: str = DEFAULT_OUT, top: int = None):
+def list_vm_disks(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern = None, *, normalize: bool = False, key: str = 'name', out: str = _DEFAULT_OUT, top: int = None):
     """
     Analyze VM disks.
     """
@@ -476,15 +476,15 @@ def analyze_disks(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pa
         'capacity_loss_pct',
     ]
     
-    with (out_table(out, title='disks', headers=disks_headers, dir=vcenter.get_out_dir()) as t_disks,
-          out_table(out, title='disks_per_vm', headers=disks_per_vm_headers, dir=vcenter.get_out_dir()) as t_disks_per_vm):
+    with (out_table(out, title='vm_disks', headers=disks_headers, dir=vcenter.get_out_dir(), env=vcenter.env) as t_disks,
+          out_table(out, title='vm_disks_per_vm', headers=disks_per_vm_headers, dir=vcenter.get_out_dir(), env=vcenter.env) as t_disks_per_vm):
         
         for i, vm in enumerate(vcenter.iter_objs(vim.VirtualMachine, search, normalize=normalize, key=key)):
             if top is not None and i == top:
                 break
             
             try:
-                logger.info(f"Analyze {vm.name} disks")
+                logger.info(f"Analyze vm {vm.name} disks")
 
                 info = extract_disks(vm)
 
@@ -584,9 +584,9 @@ def _add_arguments(parser: ArgumentParser):
     parser.add_argument('-n', '--normalize', action='store_true', help="Normalise search term(s).")
     parser.add_argument('-k', '--key', choices=['name', 'ref'], default='name', help="Search key (default: %(default)s).")
     parser.add_argument('--top', type=int)
-    parser.add_argument('-o', '--out', default=DEFAULT_OUT, help="Output Excel or CSV file (default: %(default)s).")
+    parser.add_argument('-o', '--out', default=_DEFAULT_OUT, help="Output Excel or CSV file (default: %(default)s).")
 
-analyze_disks.add_arguments = _add_arguments
+list_vm_disks.add_arguments = _add_arguments
 
 
 def extract_disks(vm: vim.VirtualMachine):
@@ -894,7 +894,7 @@ class VmDisk:
 
 #region NICs
 
-def analyze_nics(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern = None, *, normalize: bool = False, key: str = 'name', out: str = DEFAULT_OUT, top: int = None):
+def list_vm_nics(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern = None, *, normalize: bool = False, key: str = 'name', out: str = _DEFAULT_OUT, top: int = None):
     """
     Analyze VM network interfaces.
     """
@@ -926,15 +926,15 @@ def analyze_nics(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pat
         'guests_network_name',
     ]
     
-    with (out_table(out, title='nics', headers=nics_headers, dir=vcenter.get_out_dir()) as t_nics,
-          out_table(out, title='nics_per_vm', headers=nics_per_vm_headers, dir=vcenter.get_out_dir()) as t_nics_per_vm):
+    with (out_table(out, title='vm_nics', headers=nics_headers, dir=vcenter.get_out_dir(), env=vcenter.env) as t_nics,
+          out_table(out, title='vm_nics_per_vm', headers=nics_per_vm_headers, dir=vcenter.get_out_dir(), env=vcenter.env) as t_nics_per_vm):
         
         for i, vm in enumerate(vcenter.iter_objs(vim.VirtualMachine, search, normalize=normalize, key=key)):
             if top is not None and i == top:
                 break
             
             try:
-                logger.info(f"Analyze {vm.name} nics")
+                logger.info(f"Analyze vm {vm.name} nics")
 
                 info = extract_nics(vm, vcenter=vcenter)
 
@@ -1028,9 +1028,9 @@ def _add_arguments(parser: ArgumentParser):
     parser.add_argument('-n', '--normalize', action='store_true', help="Normalise search term(s).")
     parser.add_argument('-k', '--key', choices=['name', 'ref'], default='name', help="Search key (default: %(default)s).")
     parser.add_argument('--top', type=int)
-    parser.add_argument('-o', '--out', default=DEFAULT_OUT, help="Output Excel or CSV file (default: %(default)s).")
+    parser.add_argument('-o', '--out', default=_DEFAULT_OUT, help="Output Excel or CSV file (default: %(default)s).")
 
-analyze_nics.add_arguments = _add_arguments
+list_vm_nics.add_arguments = _add_arguments
 
 
 def extract_nics(vm: vim.VirtualMachine, *, vcenter: VCenterClient):

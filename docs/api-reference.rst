@@ -14,5 +14,5 @@ API reference
     vmware_reporter.dump
     vmware_reporter.host
     vmware_reporter.inventory
-    vmware_reporter.networking
+    vmware_reporter.net
     vmware_reporter.vm

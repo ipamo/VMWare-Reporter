@@ -15,14 +15,13 @@ from zut import (OutTable, add_func_command, add_module_command,
                  configure_logging, exec_command, get_help_text,
                  register_locale)
 
-from . import VCenterClient, __prog__, __version__, customfield
+from . import VCenterClient, __prog__, __version__, customfield, autoreport
 from .datastore import add_datastore_commands
 from .dump import dump
 from .host import add_host_commands
 from .inventory import export_inventory
-from .networking import add_networking_commands
+from .net import add_net_commands
 from .vm import add_vm_commands
-#TODO: add an 'export all' command, with autoarchiving, and example of daily invokation (with systemd service and email notification in case of issue)
 
 logger = logging.getLogger(__name__)
 
@@ -57,11 +56,12 @@ def add_commands(subparsers: _SubParsersAction[ArgumentParser]):
     add_func_command(subparsers, dump, name='dump')
 
     add_datastore_commands(subparsers, name='datastore')
-    add_networking_commands(subparsers, name='networking')
+    add_net_commands(subparsers, name='net')
     add_host_commands(subparsers, name='host')
     add_vm_commands(subparsers, name='vm')
+    add_func_command(subparsers, customfield.list_customfields, name='customfield')
 
-    add_module_command(subparsers, customfield)
+    add_module_command(subparsers, autoreport)
         
 
 def get_vcenter(handle: FunctionType, args: dict, *, config: ConfigParser = None, section: str = None):

@@ -30,7 +30,7 @@ def export_inventory(vcenter: VCenterClient, assets: list[str] = None, out: os.P
     if isinstance(out, IOBase):
         out_name = getattr(out, 'name', '<io>')
     else:
-        out = os.path.join(vcenter.get_out_dir(), out)
+        out = os.path.join(vcenter.get_out_dir(), str(out).format(env=vcenter.env))
         out_name = str(out)
         
     _logger.info(f"export inventory to {out_name}")

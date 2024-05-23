@@ -41,7 +41,7 @@ def dump(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern = N
         if isinstance(out, IOBase):
             obj_out = out
         else:
-            obj_out = os.path.join(vcenter.get_out_dir(), str(out).format(type=type(obj).__name__, name=name, ref=ref))
+            obj_out = os.path.join(vcenter.get_out_dir(), str(out).format(type=type(obj).__name__, name=name, ref=ref, env=vcenter.env))
             obj_out_dir = os.path.dirname(obj_out)
             if obj_out_dir:
                 os.makedirs(obj_out_dir, exist_ok=True)

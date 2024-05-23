@@ -15,11 +15,29 @@ pip install vmware-reporter
 
 ## Configuration
 
-Create file `C:\Users\$USER\AppData\Local\vmware-reporter\vmware-reporter.conf` (`/home/$USER/.config/vmware-reporter/vmware-reporter.conf` on Linux). Example:
+Create file `C:\Users\$USER\AppData\Local\vmware-reporter\vmware-reporter.conf` (`/home/$USER/.config/vmware-reporter/vmware-reporter.conf` on Linux).
+
+Example:
 
 ```ini
 [vmware-reporter]
 host = myvcenter.example.org
+user = reporter@vsphere.local
+password = ...
+no_ssl_verify = True
+```
+
+Several environments may be distinguished. Example for two environments "ENV1" and "ENV2":
+
+```ini
+[vmware-reporter:ENV1]
+host = myvcenter.env1.example.org
+user = reporter@vsphere.local
+password = ...
+no_ssl_verify = True
+
+[vmware-reporter:ENV2]
+host = myvcenter.env2.example.org
 user = reporter@vsphere.local
 password = ...
 no_ssl_verify = True
@@ -53,10 +71,16 @@ vmware-reporter inventory
 vmware-reporter dump
 ```
 
-- Reconfigure VMs (mass operation): copy `templates/vms_reconfigure.xlsx` to `data/vms_reconfigure.xlsx`, fill-in this file, then:
+- Reconfigure VMs (mass operation): copy template [vms_reconfigure.xlsx](https://ipamo.net/vmware-reporter/latest/_static/templates/vms_reconfigure.xlsx) to `data/vms_reconfigure.xlsx`, fill-in this file, then:
 
 ```sh
 vmware-reporter vm reconfigure
+```
+
+- If you use several environments, put files in `data/ENV1/` instead of `data/` and specify environment on the command line. Example:
+
+```sh
+vmware-reporter -e ENV1 vm reconfigure
 ```
 
 Complete help about command-line usage may be displayed by typing:

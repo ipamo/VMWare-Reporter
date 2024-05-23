@@ -3,24 +3,17 @@ Manage ESXi hosts.
 """
 from __future__ import annotations
 
-from datetime import datetime
-from io import IOBase
-import json
 import logging
 import os
 import re
 from argparse import ArgumentParser, RawTextHelpFormatter, _SubParsersAction
-from ipaddress import IPv4Address, IPv6Address, ip_address
-from pathlib import Path
-from typing import Any, Callable, Literal
+from io import IOBase
 
 from pyVmomi import vim
 from zut import (Header, add_func_command, get_description_text, get_help_text,
-                 gigi_bytes, out_table)
-from zut import slugify
-from zut.excel import openpyxl
+                 out_table)
 
-from . import VCenterClient, dictify_obj, dictify_value, get_obj_ref, get_obj_path
+from . import VCenterClient, dictify_value, get_obj_ref
 
 _logger = logging.getLogger(__name__)
 
@@ -34,7 +27,7 @@ def add_host_commands(commands_subparsers: _SubParsersAction[ArgumentParser], *,
     add_func_command(subparsers, list_hosts, name='list')
 
 
-_DEFAULT_OUT = 'hosts.xlsx#{title}' if openpyxl else 'hosts-{title}.csv'
+_DEFAULT_OUT = 'hosts.csv'
 
 
 #region List
@@ -45,23 +38,30 @@ def list_hosts(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Patte
         'ref',
         'overall_status',
         'config_status',
-        Header('memory', fmt='gib'),
         'cpu_packages',
         'cpu_cores',
-        'model',
-        'vendor',
-        'serial',
-        'enclosure',
+        Header('memory', fmt='gib'),
+        'cluster',
+        'state',        
+        'power_state',
+        'standby_mode',
+        'connection_state',
+        'maintenance_mode',
+        'quarantine_mode',
+        'reboot_required',
         'boot_time',
         'vmware_product',
-        'cluster',
-        'state',
+        'vendor',
+        'model',
+        'serial',
+        'enclosure',
+        'cpu_model',
     ]
 
-    with out_table(out, title='hosts', dir=vcenter.get_out_dir(), headers=headers, after1970=True) as t:
+    with out_table(out, title='hosts', dir=vcenter.get_out_dir(), env=vcenter.env, headers=headers, after1970=True) as t:
         for obj in vcenter.iter_objs(vim.HostSystem, search, normalize=normalize, key=key):  
             try:
-                _logger.info(f"Analyze {obj.name}")
+                _logger.info(f"Analyze host {obj.name}")
 
                 oii = dictify_value(obj.hardware.systemInfo.otherIdentifyingInfo)
 
@@ -70,17 +70,24 @@ def list_hosts(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Patte
                     get_obj_ref(obj),
                     obj.overallStatus,
                     obj.configStatus,
-                    obj.hardware.memorySize,
                     obj.hardware.cpuInfo.numCpuPackages,
                     obj.hardware.cpuInfo.numCpuCores,
-                    obj.hardware.systemInfo.model,
-                    obj.hardware.systemInfo.vendor,
-                    oii.get('SerialNumberTag'),
-                    oii.get('EnclosureSerialNumberTag'),
+                    obj.hardware.memorySize,
+                    obj.parent.name if obj.parent and obj.parent != obj else None,
+                    obj.runtime.dasHostState.state if obj.runtime.dasHostState else None,                                        
+                    obj.runtime.powerState,
+                    obj.runtime.standbyMode,
+                    obj.runtime.connectionState,
+                    obj.runtime.inMaintenanceMode,
+                    obj.runtime.inQuarantineMode,
+                    obj.summary.rebootRequired,
                     obj.runtime.bootTime,
                     obj.config.product.fullName,
-                    obj.parent.name,
-                    obj.runtime.dasHostState.state if obj.runtime.dasHostState else None,
+                    obj.hardware.systemInfo.vendor,
+                    obj.hardware.systemInfo.model,
+                    oii.get('SerialNumberTag'),
+                    oii.get('EnclosureSerialNumberTag'),
+                    obj.summary.hardware.cpuModel,
                 ])
             
             except Exception as err:
