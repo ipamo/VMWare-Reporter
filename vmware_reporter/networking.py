@@ -12,8 +12,7 @@ from pyVmomi import vim
 from zut import add_func_command, out_table
 from zut.excel import openpyxl
 
-from . import VCenterClient
-from .inspect import get_obj_ref
+from . import VCenterClient, get_obj_ref
 
 
 def add_networking_commands(commands_subparsers: _SubParsersAction[ArgumentParser], *, name: str):

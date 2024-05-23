@@ -2,25 +2,27 @@
 Interact easily with your VMWare clusters.
 """
 from __future__ import annotations
-from configparser import ConfigParser
-import inspect
+
 import logging
 import os
 from argparse import ArgumentParser, RawTextHelpFormatter, _SubParsersAction
+from configparser import ConfigParser
 from contextlib import nullcontext
+from inspect import signature
 from types import FunctionType
 
-from zut import (OutTable, add_func_command, add_module_command, configure_logging, exec_command,
-                 get_help_text, register_locale)
+from zut import (OutTable, add_func_command, add_module_command,
+                 configure_logging, exec_command, get_help_text,
+                 register_locale)
 
 from . import VCenterClient, __prog__, __version__, customfield
 from .datastore import add_datastore_commands
 from .dump import dump
-from .inventory import export_inventory
 from .extract import handle as extract_handle
 from .host import add_host_commands
-from .vm import add_vm_commands
+from .inventory import export_inventory
 from .networking import add_networking_commands
+from .vm import add_vm_commands
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +67,7 @@ def add_commands(subparsers: _SubParsersAction[ArgumentParser]):
         
 
 def get_vcenter(handle: FunctionType, args: dict, *, config: ConfigParser = None, section: str = None):
-    if 'vcenter' in inspect.signature(handle).parameters:
+    if 'vcenter' in signature(handle).parameters:
         env = args.pop('env', None)
         vcenter = VCenterClient(env, config=config, section=section)
         args['vcenter'] = vcenter    

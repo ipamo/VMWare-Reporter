@@ -11,8 +11,7 @@ from zut import out_table, Literal, get_config_paths
 from reporter_utils.extractions import Extraction, get_extractions
 
 import vmware_reporter
-from . import VCenterClient
-from .inspect import dictify_value, dictify_obj, get_obj_path, get_obj_ref
+from . import VCenterClient, dictify_value, dictify_obj, get_obj_path, get_obj_ref
 from .vm import extract_disks, extract_nics
 
 logger = logging.getLogger(__name__)

@@ -7,8 +7,7 @@ import sys
 from argparse import ArgumentParser
 from io import IOBase
 
-from . import VCenterClient
-from .inspect import get_obj_ref, dump_obj
+from . import VCenterClient, get_obj_ref, dump_obj
 
 logger = logging.getLogger(__name__)
 

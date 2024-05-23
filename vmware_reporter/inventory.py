@@ -9,8 +9,7 @@ from io import IOBase
 
 from pyVmomi import vim
 
-from . import VCenterClient
-from .inspect import get_obj_ref
+from . import VCenterClient, get_obj_ref
 
 logger = logging.getLogger(__name__)
 

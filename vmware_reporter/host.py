@@ -20,8 +20,7 @@ from zut import (Header, add_func_command, get_description_text, get_help_text,
 from zut import slugify
 from zut.excel import openpyxl
 
-from . import VCenterClient
-from .inspect import dictify_obj, dictify_value, get_obj_ref, get_obj_path
+from . import VCenterClient, dictify_obj, dictify_value, get_obj_ref, get_obj_path
 
 logger = logging.getLogger(__name__)
 

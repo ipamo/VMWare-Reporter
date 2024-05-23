@@ -20,8 +20,7 @@ from zut import (Header, add_func_command, get_description_text, get_help_text,
 from zut import slugify
 from zut.excel import openpyxl
 
-from . import VCenterClient
-from .inspect import dictify_obj, dictify_value, get_obj_ref, get_obj_path
+from . import VCenterClient, dictify_obj, dictify_value, get_obj_ref, get_obj_path
 
 logger = logging.getLogger(__name__)
 
@@ -169,19 +168,19 @@ list_vms.add_arguments = _add_arguments
 #region Start, stop, suspend
 
 def start_vms(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern = None, *, normalize: bool = False, key: str = 'name', **options):
-    _invoke('PowerOn', vcenter, search, normalize=normalize, key=key)
+    _invoke_and_track('PowerOn', vcenter, search, normalize=normalize, key=key)
 
 def stop_vms(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern = None, *, normalize: bool = False, key: str = 'name', force: bool = False):
     if force:
-        _invoke('PowerOff', vcenter, search, normalize=normalize, key=key)
+        _invoke_and_track('PowerOff', vcenter, search, normalize=normalize, key=key)
     else:
-        _invoke('ShutdownGuest', vcenter, search, normalize=normalize, key=key)
+        _invoke_and_track('ShutdownGuest', vcenter, search, normalize=normalize, key=key)
 
 def suspend_vms(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern = None, *, normalize: bool = False, key: str = 'name', force: bool = False):
     if force:
-        _invoke('Suspend', vcenter, search, normalize=normalize, key=key)
+        _invoke_and_track('Suspend', vcenter, search, normalize=normalize, key=key)
     else:
-        _invoke('StandbyGuest', vcenter, search, normalize=normalize, key=key)
+        _invoke_and_track('StandbyGuest', vcenter, search, normalize=normalize, key=key)
 
 def _add_arguments(parser: ArgumentParser):
     parser.add_argument('search', nargs='*', help="Search term(s).")
@@ -194,17 +193,19 @@ stop_vms.add_arguments = _add_arguments
 suspend_vms.add_arguments = _add_arguments
 
 
-def _invoke(op: str, vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern = None, *, normalize: bool = False, key: str = 'name'):
+def _invoke_and_track(op: str, vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern = None, *, normalize: bool = False, key: str = 'name'):
     # Idea: https://github.com/reubenur-rahman/vmware-pyvmomi-examples/blob/master/vm_power_ops.py
     tasks = {}
     for vm in vcenter.iter_objs(vim.VirtualMachine, search, normalize=normalize, key=key):
-        logger.info(f"{op} {vm.name} ({get_obj_ref(vm)})...")
+        log_prefix = f"{vm.name} ({get_obj_ref(vm)})"
+        logger.info(f"{op} {log_prefix}...")
         func = getattr(vm, op)
-        task = func()
-        if task is not None:
-            tasks[task] = f"{vm.name} ({get_obj_ref(vm)})"
-        else:
-            pass #TODO: follow status?
+        try:
+            task = func()
+            if task is not None:
+                tasks[task] = log_prefix
+        except Exception as err:
+            logger.error(f"{log_prefix}: {str(err)}")
 
     if tasks:
         vcenter.wait_for_task(tasks)
@@ -218,11 +219,11 @@ def _invoke(op: str, vcenter: VCenterClient, search: list[str|re.Pattern]|str|re
 DEFAULT_RECONFIGURE_FILE = 'vms_reconfigure.xlsx'
 DEFAULT_RECONFIGURE_TABLE = 'vms_reconfigure'
 
-def reconfigure_vms(vcenter: VCenterClient, file: str|Path = DEFAULT_RECONFIGURE_FILE, tablename: str = DEFAULT_RECONFIGURE_TABLE, top: int = None):
+def reconfigure_vms(vcenter: VCenterClient, path: str|Path = DEFAULT_RECONFIGURE_FILE, top: int = None):
     """
     Reconfigure VMs (vcpu, memory, annotation, custom fields) as a mass operation, using an Excel file.
     """
-    from zut.excel import ExcelWorkbook, ExcelRow
+    from zut.excel import ExcelWorkbook, ExcelRow, split_excel_path
 
     class Helper:
         def __init__(self, row: ExcelRow, found: bool = False):
@@ -281,11 +282,9 @@ def reconfigure_vms(vcenter: VCenterClient, file: str|Path = DEFAULT_RECONFIGURE
         if customfield.managedObjectType == vim.VirtualMachine:
             fielddefs.append(FieldDef(customfield.name, str, '__customvalue__', customfield.key))
     
-    file = str(file).format(env=vcenter.env)
-    if not file.startswith(('./','.\\')):
-        file = os.path.join(vcenter.get_out_dir(), file)
+    path, tablename = split_excel_path(path, default_table_name=DEFAULT_RECONFIGURE_TABLE, dir=vcenter.get_out_dir())
 
-    workbook = ExcelWorkbook(file)
+    workbook = ExcelWorkbook(path)
     table = workbook.get_or_create_table(tablename)
     
     helpers: dict[str,Helper] = {}
@@ -419,8 +418,7 @@ def reconfigure_vms(vcenter: VCenterClient, file: str|Path = DEFAULT_RECONFIGURE
 
 
 def _add_arguments(parser: ArgumentParser):
-    parser.add_argument('file', nargs='?', default=DEFAULT_RECONFIGURE_FILE, help="Path to Excel file describing VMs to reconfigure.")
-    parser.add_argument('--table', dest='tablename', default=DEFAULT_RECONFIGURE_TABLE)
+    parser.add_argument('path', nargs='?', default=DEFAULT_RECONFIGURE_FILE, help="Path to Excel file describing VMs to reconfigure.")
     parser.add_argument('--top', type=int)
 
 reconfigure_vms.add_arguments = _add_arguments

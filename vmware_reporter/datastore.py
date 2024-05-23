@@ -21,8 +21,7 @@ from zut import (Header, add_func_command, get_description_text, get_help_text,
                  out_table)
 from zut.excel import openpyxl
 
-from . import VCenterClient
-from .inspect import get_obj_path, get_obj_ref
+from . import VCenterClient, get_obj_path, get_obj_ref
 
 logger = logging.getLogger(__name__)
 
