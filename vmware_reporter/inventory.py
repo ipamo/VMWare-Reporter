@@ -1,3 +1,6 @@
+"""
+Inventory of VMWare managed objects.
+"""
 from __future__ import annotations
 
 import logging
@@ -18,7 +21,7 @@ _DEFAULT_OUT = "inventory.yml"
 
 def export_inventory(vcenter: VCenterClient, assets: list[str] = None, out: os.PathLike|IOBase = _DEFAULT_OUT):
     """
-    Export inventory of VMWare managed objects to a YAML file.
+    Export an inventory of VMWare managed objects to a YAML file.
     """
     inventory = build_inventory(vcenter, assets=assets)
     

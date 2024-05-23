@@ -1,3 +1,6 @@
+"""
+Dump all available data about VMWare managed objects.
+"""
 from __future__ import annotations
 
 import logging

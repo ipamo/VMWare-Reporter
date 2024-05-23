@@ -1,3 +1,6 @@
+"""
+Top-level API of vmware-reporter library.
+"""
 from __future__ import annotations
 
 import json

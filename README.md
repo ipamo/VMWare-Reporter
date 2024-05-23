@@ -27,7 +27,7 @@ password = ...
 no_ssl_verify = True
 ```
 
-Several environments may be distinguished. Example for two environments "ENV1" and "ENV2":
+Several environments may be distinguished. Example for two environments named `ENV1` and `ENV2`:
 
 ```ini
 [vmware-reporter:ENV1]

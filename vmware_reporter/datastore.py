@@ -1,5 +1,5 @@
 """
-Analyze datastore files or perform operations on datastores.
+Analyze datastores or perform operations on datastores.
 """
 from __future__ import annotations
 
