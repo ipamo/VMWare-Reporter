@@ -6,7 +6,7 @@ from collections.abc import Callable, Iterator
 from configparser import ConfigParser
 from inspect import signature
 from pathlib import Path
-from typing import Literal, TypeVar, overload
+from typing import Any, Iterable, Literal, TypeVar, overload
 from uuid import UUID
 
 from pyVim.connect import Disconnect, SmartConnect
@@ -312,27 +312,48 @@ class VCenterClient:
         return self._cookie
 
 
-    def wait_for_task(self, *tasks: vim.Task):
+    def wait_for_task(self, tasks: vim.Task|list[vim.Task]|dict[vim.Task,Any]):
         """
         Given a service instance and tasks, return after all the tasks are complete.
+        - `tasks`: a task, a list of tasks, or a dict associating task to log prefixes.
         """
-        property_collector = self.service_instance.content.propertyCollector
-        task_list = [str(task) for task in tasks]
+        task_list: list[vim.Task] = []
+        log_prefixes: dict[vim.Task,Any] = None
+        if isinstance(tasks, dict):
+            log_prefixes = tasks
+            for task in tasks.keys():
+                if not isinstance(task, vim.Task):
+                    raise TypeError(f"Invalid dict key: {task} (type {type(task).__name__}, expected vim.Task)")
+                task_list.append(task)
+        elif isinstance(tasks, list):
+            for task in tasks:
+                if not isinstance(task, vim.Task):
+                    raise TypeError(f"Invalid list element: {task} (type {type(task).__name__}, expected vim.Task)")
+                task_list.append(task)
+        elif isinstance(task, vim.Task):
+            task_list.append(task)
+        else:
+            raise TypeError(f"Invalid argument: {task} (type {type(task).__name__}, expected vim.Task)")
+        
         # Create filter
-        obj_specs = [vmodl.query.PropertyCollector.ObjectSpec(obj=task) for task in tasks]
+        obj_specs = [vmodl.query.PropertyCollector.ObjectSpec(obj=task) for task in task_list]   
         property_spec = vmodl.query.PropertyCollector.PropertySpec(type=vim.Task, pathSet=[], all=True)
-        filter_spec = vmodl.query.PropertyCollector.FilterSpec()
-        filter_spec.objectSet = obj_specs
-        filter_spec.propSet = [property_spec]
-        pc_filter = property_collector.CreateFilter(filter_spec, True)
+        filter_spec = vmodl.query.PropertyCollector.FilterSpec(objectSet=obj_specs, propSet=[property_spec])
+        pc = self.service_instance.content.propertyCollector
+        pc_filter = pc.CreateFilter(filter_spec, True)
+
+        task_failures = 0
         try:
-            version, state = None, None
+            remaining_task_strs = [str(task) for task in task_list]
+            version = None
+            state = None
             # Loop looking for updates till the state moves to a completed state.
-            while task_list:
-                update = property_collector.WaitForUpdates(version)
+            # (tasks are removed from task_list one by one when they reach a completed)
+            while remaining_task_strs:
+                update = pc.WaitForUpdates(version)
                 for filter_set in update.filterSet:
                     for obj_set in filter_set.objectSet:
-                        task = obj_set.obj
+                        task: vim.Task = obj_set.obj
                         for change in obj_set.changeSet:
                             if change.name == 'info':
                                 state = change.val.state
@@ -341,21 +362,31 @@ class VCenterClient:
                             else:
                                 continue
 
-                            if not str(task) in task_list:
+                            if not str(task) in remaining_task_strs:
                                 continue
 
                             if state == vim.TaskInfo.State.success:
-                                # Remove task from taskList
-                                task_list.remove(str(task))
+                                remaining_task_strs.remove(str(task))
+                                if log_prefix := log_prefixes.get(task):
+                                    self.logger.info(f"{log_prefix}: success")
                             elif state == vim.TaskInfo.State.error:
-                                raise task.info.error
+                                if len(task_list) > 1:
+                                    remaining_task_strs.remove(str(task))
+                                    log_prefix = log_prefixes.get(task)
+                                    self.logger.error(f"{f'{log_prefix}: ' if log_prefix else ''}{task.info.error}", exc_info=task.info.error)
+                                    task_failures += 1
+                                else:
+                                    raise task.info.error
                 # Move to next version
                 version = update.version
         finally:
             if pc_filter:
                 pc_filter.Destroy()
 
+        if task_failures > 0:
+            raise MessageError(f"{task_failures} task{'s' if task_failures > 1 else ''} failed (see previous logs)")
 
+ 
     def get_out_dir(self):
         return Path('data' if self.env == 'default' else f'data/{self.env}')
 

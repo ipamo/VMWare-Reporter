@@ -33,10 +33,15 @@ def add_vm_commands(commands_subparsers: _SubParsersAction[ArgumentParser], *, n
 
     subparsers = parser.add_subparsers(title='Sub commands')
     add_func_command(subparsers, list_vms, name='list')
-    add_func_command(subparsers, reconfigure_vms, name='reconfigure')
     add_func_command(subparsers, analyze_disks, name='disks')
     add_func_command(subparsers, analyze_nics, name='nics')
-
+    
+    # Operations
+    add_func_command(subparsers, start_vms, name='start')
+    add_func_command(subparsers, stop_vms, name='stop')
+    add_func_command(subparsers, suspend_vms, name='suspend')    
+    add_func_command(subparsers, reconfigure_vms, name='reconfigure')
+   
 
 DEFAULT_OUT = 'vms.xlsx#{title}' if openpyxl else 'vms-{title}.csv'
 
@@ -157,6 +162,53 @@ def _add_arguments(parser: ArgumentParser):
     parser.add_argument('-o', '--out', default=DEFAULT_OUT, help="Output table (default: %(default)s).")
 
 list_vms.add_arguments = _add_arguments
+
+#endregion
+
+
+#region Start, stop, suspend
+
+def start_vms(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern = None, *, normalize: bool = False, key: str = 'name', **options):
+    _invoke('PowerOn', vcenter, search, normalize=normalize, key=key)
+
+def stop_vms(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern = None, *, normalize: bool = False, key: str = 'name', force: bool = False):
+    if force:
+        _invoke('PowerOff', vcenter, search, normalize=normalize, key=key)
+    else:
+        _invoke('ShutdownGuest', vcenter, search, normalize=normalize, key=key)
+
+def suspend_vms(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern = None, *, normalize: bool = False, key: str = 'name', force: bool = False):
+    if force:
+        _invoke('Suspend', vcenter, search, normalize=normalize, key=key)
+    else:
+        _invoke('StandbyGuest', vcenter, search, normalize=normalize, key=key)
+
+def _add_arguments(parser: ArgumentParser):
+    parser.add_argument('search', nargs='*', help="Search term(s).")
+    parser.add_argument('-n', '--normalize', action='store_true', help="Normalise search term(s).")
+    parser.add_argument('-k', '--key', choices=['name', 'ref'], default='name', help="Search key (default: %(default)s).")
+    parser.add_argument('-f', '--force', action='store_true', help="Force operation.")
+
+start_vms.add_arguments = _add_arguments
+stop_vms.add_arguments = _add_arguments
+suspend_vms.add_arguments = _add_arguments
+
+
+def _invoke(op: str, vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern = None, *, normalize: bool = False, key: str = 'name'):
+    # Idea: https://github.com/reubenur-rahman/vmware-pyvmomi-examples/blob/master/vm_power_ops.py
+    tasks = {}
+    for vm in vcenter.iter_objs(vim.VirtualMachine, search, normalize=normalize, key=key):
+        logger.info(f"{op} {vm.name} ({get_obj_ref(vm)})...")
+        func = getattr(vm, op)
+        task = func()
+        if task is not None:
+            tasks[task] = f"{vm.name} ({get_obj_ref(vm)})"
+        else:
+            pass #TODO: follow status?
+
+    if tasks:
+        vcenter.wait_for_task(tasks)
+
 
 #endregion
 
