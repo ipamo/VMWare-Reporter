@@ -604,8 +604,8 @@ def list_vm_disks(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pa
                     len(mapped_guests) + len(info.unmapped_guests) if info is not None else None, # 'guest_disks',
                     len(mapped_guests) if info is not None else None, # 'with_mappings',
                     len(info.unmapped_guests) if info is not None else None, # 'without_mappings',
-                    sorted(f"{guest.diskPath.rstrip(':\\')} ({guest.filesystemType})" if guest.filesystemType else guest.diskPath.rstrip(':\\') for guest in mapped_guests) if info is not None else None, # 'mapped_guest',
-                    sorted(f"{guest.diskPath.rstrip(':\\')} ({guest.filesystemType})" if guest.filesystemType else guest.diskPath.rstrip(':\\') for guest in info.unmapped_guests) if info is not None else None, # 'unmapped_guests',
+                    sorted((guest.diskPath.rstrip(':\\') + f" ({guest.filesystemType})") if guest.filesystemType else guest.diskPath.rstrip(':\\') for guest in mapped_guests) if info is not None else None, # 'mapped_guest',
+                    sorted((guest.diskPath.rstrip(':\\') + f" ({guest.filesystemType})") if guest.filesystemType else guest.diskPath.rstrip(':\\') for guest in info.unmapped_guests) if info is not None else None, # 'unmapped_guests',
                     info.capacity if info is not None else None,
                     info.freespace if info is not None else None,
                     info.mapped_disks_capacity if info is not None and mapped_guests else None,
@@ -655,7 +655,7 @@ def list_vm_disks(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pa
                             disk.capacity,
                             disk.freespace,
                             disk.guests_mapping,
-                            sorted(f"{guest.diskPath.rstrip(':\\')} ({guest.filesystemType})" if guest.filesystemType else guest.diskPath.rstrip(':\\') for guest in disk.guests), # guests
+                            sorted((guest.diskPath.rstrip(':\\') + f" ({guest.filesystemType})") if guest.filesystemType else guest.diskPath.rstrip(':\\') for guest in disk.guests), # guests
                             disk.guests_capacity if disk.guests else None,
                             disk.guests_freespace if disk.guests else None,
                         ])
@@ -676,7 +676,7 @@ def list_vm_disks(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pa
                             None, # capacity
                             None, # freespace
                             'ignored' if guest in info.ignored_guests else 'unmapped', # mapping
-                            f"{guest.diskPath.rstrip(':\\')} ({guest.filesystemType})" if guest.filesystemType else guest.diskPath.rstrip(':\\'), # guests
+                            (guest.diskPath.rstrip(':\\') + f" ({guest.filesystemType})") if guest.filesystemType else guest.diskPath.rstrip(':\\'), # guests
                             guest.capacity, # guests_capacity
                             guest.freeSpace, # guests_freespace
                         ])
@@ -758,7 +758,8 @@ def extract_disks(vm: vim.VirtualMachine):
                 disk.guests_capacity += guest.capacity
                 disk.guests_freespace += guest.freeSpace
             if disk.guests_capacity > disk.capacity:
-                info._append_issue(f"Inconsistent capacity ({disk.guests_capacity:,}) for guests {', '.join(guest.diskPath.rstrip(':\\') for guest in disk.guests)} (device {disk.device.key} capacity: {disk.capacity:,})")
+                guest_list = ', '.join(guest.diskPath.rstrip(':\\') for guest in disk.guests)
+                info._append_issue(f"Inconsistent capacity ({disk.guests_capacity:,}) for guests {guest_list} (device {disk.device.key} capacity: {disk.capacity:,})")
 
     # Identify guests to ignore
     info._identify_ignored_guests()
