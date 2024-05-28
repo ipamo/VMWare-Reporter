@@ -17,7 +17,7 @@ def list_custom_values(vcenter: VCenterClient, out: os.PathLike|IOBase = _DEFAUL
     """
     headers=['name', 'key', 'obj_type', 'data_type']
 
-    with out_table(out, title="customvalues", dir=vcenter.get_out_dir(), env=vcenter.env, headers=headers) as t:
+    with out_table(out, title="customvalues", dir=vcenter.out_dir, env=vcenter.env, headers=headers) as t:
         for field in vcenter.service_content.customFieldsManager.field:
             t.append([field.name, field.key, field.managedObjectType.__name__, field.type.__name__])
 

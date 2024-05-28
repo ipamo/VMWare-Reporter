@@ -25,7 +25,7 @@ from pyVim.connect import Disconnect, SmartConnect
 from pyVmomi import vim, vmodl
 from pyVmomi.VmomiSupport import _managedDefMap
 from zut import (ExtendedJSONEncoder, Filters, MessageError,
-                 iter_dicts_from_csv, resolve_host)
+                 iter_dicts_from_csv, resolve_host, configure_smb_credentials)
 from zut.excel import ExcelWorkbook, is_excel_path, split_excel_path
 
 from .settings import CONFIG, CONFIG_SECTION
@@ -48,7 +48,9 @@ class VCenterClient:
     """
     Main entry point of the library to retrieve VMWare managed objects and interact with them. 
     """
-    def __init__(self, env: str = None, *, host: str = None, user: str = None, password: str = None, no_ssl_verify: bool = None, config: ConfigParser = None, section: str = None):
+    _first_instanciation = True
+
+    def __init__(self, env: str = None, *, host: str = None, user: str = None, password: str = None, no_ssl_verify: bool = None, out_dir: str|Path = None, config: ConfigParser = None, section: str = None):
         """
         Create a new vCenter client.
 
@@ -64,6 +66,13 @@ class VCenterClient:
             config = CONFIG
         if not section:
             section = CONFIG_SECTION
+
+        if type(self)._first_instanciation:
+            smb_user = config.get(section, 'smb_user', fallback=None)
+            smb_password = config.get(section, 'smb_password', fallback=None)
+            if smb_user and smb_password:
+                configure_smb_credentials(smb_user, smb_password)
+            type(self)._first_instanciation = False
         
         if not env:
             envs = VCenterClient.get_configured_envs(config=config, section=section)
@@ -80,6 +89,14 @@ class VCenterClient:
         self.user = user if user is not None else config.get(full_section, 'user')
         self.password = password if password is not None else config.get(full_section, 'password')
         self.no_ssl_verify = no_ssl_verify if no_ssl_verify is not None else config.getboolean(full_section, 'no_ssl_verify', fallback=False)
+
+        if out_dir is None:
+            out_dir = config.get(full_section, 'out_dir', fallback=None)
+            if out_dir is None:
+                out_dir = config.get(section, 'out_dir', fallback=None)
+                if out_dir is None:
+                    out_dir = 'data' if env == 'default' else 'data/{env}'
+        self.out_dir = Path(str(out_dir).format(env=env))
         
         self.logger = logging.getLogger(f'{self.__class__.__module__}.{self.__class__.__qualname__}' + ('' if env == 'default' else f'.{self.env}'))
 
@@ -406,10 +423,6 @@ class VCenterClient:
         if task_failures > 0:
             raise MessageError(f"{task_failures} task{'s' if task_failures > 1 else ''} failed (see previous logs)")
 
- 
-    def get_out_dir(self):
-        return Path('data' if self.env == 'default' else f'data/{self.env}')
-
     #endregion
 
 
@@ -421,7 +434,7 @@ class VCenterClient:
             config = CONFIG
         if not section:
             section = CONFIG_SECTION
-        
+
         envs: list[str] = []
         for _section in config.sections():
             if m := re.match(r'^' + re.escape(section) + r'(?:\:(.+))?', _section):
@@ -432,6 +445,7 @@ class VCenterClient:
                     env = 'default'
                 if config.get(_section, 'host', fallback=None) is not None:
                     envs.append(env)
+
         return envs
         
     @classmethod

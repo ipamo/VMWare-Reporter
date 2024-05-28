@@ -60,7 +60,7 @@ def list_datastores(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.
         'host_access',
     ]
 
-    with out_table(out, title='datastores', dir=vcenter.get_out_dir(), env=vcenter.env, headers=headers) as t:
+    with out_table(out, title='datastores', dir=vcenter.out_dir, env=vcenter.env, headers=headers) as t:
         for obj in vcenter.iter_objs(vim.Datastore, search, normalize=normalize, key=key):            
             try:
                 _logger.info(f"Analyze datastore {obj.name}")
@@ -210,7 +210,7 @@ def list_datastore_elements(vcenter: VCenterClient, search: list[str|re.Pattern]
     """
     List datastore elements (files and directories).
     """
-    with out_table(out, headers=DatastoreElement.get_headers(bytes=bytes), title="datastore_elements", dir=vcenter.get_out_dir(), env=vcenter.env) as t:
+    with out_table(out, headers=DatastoreElement.get_headers(bytes=bytes), title="datastore_elements", dir=vcenter.out_dir, env=vcenter.env) as t:
         for obj in vcenter.get_objs(vim.Datastore, search, normalize=normalize, key=key, sort_key='name'):
             _logger.info(f'List datastore elements: {obj.name}')
         
@@ -237,7 +237,7 @@ def list_datastore_stats(vcenter: VCenterClient, search: list[str|re.Pattern]|st
     """
     Analyze stats about datastore elements (files and directories).
     """
-    with out_table(out, headers=DatastoreStat.get_headers(bytes=bytes), title="datastore_stats", dir=vcenter.get_out_dir(), env=vcenter.env) as t:
+    with out_table(out, headers=DatastoreStat.get_headers(bytes=bytes), title="datastore_stats", dir=vcenter.out_dir, env=vcenter.env) as t:
         for obj in vcenter.get_objs(vim.Datastore, search, normalize=normalize, key=key, sort_key='name'):
             _logger.info(f'Analyze datastore stats: {obj.name}')
 

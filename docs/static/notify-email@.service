@@ -1,0 +1,6 @@
+[Unit]
+Description=Send systemd notification by email
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/bash -c 'printf "Subject: %i failed on $(hostname)\n\n$(systemctl status %i)" | /bin/msmtp --host=mycompany.example.org --from=from@example.org to@example.org'

@@ -30,7 +30,7 @@ def list_categories(vcenter: VCenterClient, out: os.PathLike|IOBase = _DEFAULT_O
     """
     headers=['uuid', 'name', 'description', 'cardinality', 'associable_types']
 
-    with out_table(out, title="categories", dir=vcenter.get_out_dir(), env=vcenter.env, headers=headers) as t:
+    with out_table(out, title="categories", dir=vcenter.out_dir, env=vcenter.env, headers=headers) as t:
         for category in vcenter.get_categories():
             t.append([
                 category.uuid,
@@ -52,7 +52,7 @@ def list_tags(vcenter: VCenterClient, out: os.PathLike|IOBase = _DEFAULT_OUT):
     """
     headers=['uuid', 'name', 'description', 'category']
 
-    with out_table(out, title="tags", dir=vcenter.get_out_dir(), env=vcenter.env, headers=headers) as t:
+    with out_table(out, title="tags", dir=vcenter.out_dir, env=vcenter.env, headers=headers) as t:
         for tag in vcenter.get_tags():
             t.append([
                 tag.uuid,

@@ -33,7 +33,7 @@ def export_inventory(vcenter: VCenterClient, assets: list[str] = None, out: os.P
     if isinstance(out, IOBase):
         out_name = getattr(out, 'name', '<io>')
     else:
-        out = os.path.join(vcenter.get_out_dir(), str(out).format(env=vcenter.env))
+        out = os.path.join(vcenter.out_dir, str(out).format(env=vcenter.env))
         out_name = str(out)
         
     _logger.info(f"export inventory to {out_name}")
@@ -177,12 +177,21 @@ def build_authorization_inventory(vcenter: VCenterClient, parent = None) -> Inve
         name = permission.entity.name
         InventoryNode(name, nature=f"{type(permission.entity).__name__} permission", ref=ref, propagate=permission.propagate, parent=principal_node)
 
+    return node
+
 
 def build_license_inventory(vcenter: VCenterClient, parent = None) -> InventoryNode:
-    node = InventoryNode("(licenses)", parent=parent)
+    node = None
 
-    for license in vcenter.service_content.licenseManager.licenses:
-        InventoryNode(license.name, nature=type(license), key=license.licenseKey, parent=node)
+    try:
+        for license in vcenter.service_content.licenseManager.licenses:
+            if not node:
+                node = InventoryNode("(licenses)", parent=parent)
+            InventoryNode(license.name, nature=type(license), key=license.licenseKey, parent=node)
+    except vim.fault.NoPermission:
+        _logger.warning("Skip license inventory (no permission)")
+
+    return node
 
 
 class InventoryNode:

@@ -24,8 +24,9 @@ def handle(vcenter: VCenterClient, out: os.PathLike|IOBase = _DEFAULT_OUT):
     Export automatic report.
     """
     if is_excel_path(out, accept_table_suffix=True):
-        path, _ = split_excel_path(out, dir=vcenter.get_out_dir(), env=vcenter.env, title='__title__')
-        target = path.parent.joinpath('archives')
+        path, _ = split_excel_path(out, dir=vcenter.out_dir, env=vcenter.env, title='__title__')
+        archives_dir = CONFIG.get(CONFIG_SECTION, 'autoreport_archives', fallback='archives')
+        target = files.join(files.dirname(path), archives_dir)
         files.archivate(path, target, missing_ok=True, keep=True)
 
     list_vms(vcenter, out=out)

@@ -95,6 +95,18 @@ vmware-reporter --help
 ```
 
 
+## Run every day (using a systemd timer)
+
+Copy [vmware-reporter.service](https://ipamo.net/vmware-reporter/latest/_static/vmware-reporter.service), [vmware-reporter.timer](https://ipamo.net/vmware-reporter/latest/_static/vmware-reporter.timer) and [notify-email@.service](https://ipamo.net/vmware-reporter/latest/_static/notify-email@.service)
+in `/etc/systemd/system` and adapt them to your configuration.
+
+Run:
+
+    sudo systemctl daemon-reload
+    sudo systemctl enable vmware-reporter.timer
+    sudo systemctl start vmware-reporter.timer
+
+
 ## Credits
 
 This library leverages [pyvmomi](https://github.com/vmware/pyvmomi), the vSphere API Python bindings provided by VMWare.

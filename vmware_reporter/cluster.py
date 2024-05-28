@@ -49,7 +49,7 @@ def list_clusters(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pa
         Header('effective_memory', fmt='gib'),
     ]
 
-    with out_table(out, title='clusters', dir=vcenter.get_out_dir(), env=vcenter.env, headers=headers) as t:
+    with out_table(out, title='clusters', dir=vcenter.out_dir, env=vcenter.env, headers=headers) as t:
         for obj in vcenter.iter_objs(vim.ComputeResource, search, normalize=normalize, key=key):            
             try:
                 _logger.info(f"Analyze cluster {obj.name}")

@@ -43,7 +43,7 @@ def list_perf_counters(vcenter: VCenterClient, group: str = None, level: int = N
 
     pm = vcenter.service_content.perfManager
 
-    with out_table(out, title='perf_counters', dir=vcenter.get_out_dir(), env=vcenter.env, headers=headers) as t:
+    with out_table(out, title='perf_counters', dir=vcenter.out_dir, env=vcenter.env, headers=headers) as t:
         for counter in sorted(pm.perfCounter, key=lambda counter: (counter.groupInfo.key, counter.nameInfo.key, counter.rollupType)):
             if group is not None and counter.groupInfo.key != group:
                 continue
@@ -66,7 +66,7 @@ def list_perf_intervals(vcenter: VCenterClient, out: os.PathLike|IOBase = _DEFAU
 
     pm = vcenter.service_content.perfManager
 
-    with out_table(out, title='perf_intervals', dir=vcenter.get_out_dir(), env=vcenter.env, headers=headers) as t:
+    with out_table(out, title='perf_intervals', dir=vcenter.out_dir, env=vcenter.env, headers=headers) as t:
         for interval in sorted(pm.historicalInterval, key=lambda interval: interval.samplingPeriod):
             t.append([interval.key, interval.name, interval.enabled, interval.level, interval.samplingPeriod])
 
@@ -94,7 +94,7 @@ def list_perf_metrics(vcenter: VCenterClient, search: list[str|re.Pattern]|str|r
         'entity_name', 'entity_ref', 'entity_type', 'instance', 'key', 'group', 'name', 'rollup_type', 'stats_type', 'unit', 'level', 'per_device_level'
     ]
 
-    with out_table(out, title='perf_metrics', dir=vcenter.get_out_dir(), env=vcenter.env, headers=headers) as t:
+    with out_table(out, title='perf_metrics', dir=vcenter.out_dir, env=vcenter.env, headers=headers) as t:
         for obj in vcenter.iter_objs(types, search=search, normalize=normalize, key=key):
             if isinstance(obj, (vim.Folder, vim.Network)):
                 continue # No performance data for these types
@@ -187,7 +187,7 @@ def extract_perf_data(vcenter: VCenterClient, search: list[str|re.Pattern]|str|r
         'entity_name', 'entity_ref', 'entity_type', 'instance', 'interval', 'timestamp', *all_counters
     ]
 
-    with out_table(out, title='perf_data', dir=vcenter.get_out_dir(), env=vcenter.env, headers=headers) as t:
+    with out_table(out, title='perf_data', dir=vcenter.out_dir, env=vcenter.env, headers=headers) as t:
         for obj in vcenter.iter_objs(types, search=search, normalize=normalize, key=key):
             if isinstance(obj, (vim.Folder, vim.Network)):
                 continue # No performance data for these types

@@ -48,7 +48,7 @@ def list_resourcepool(vcenter: VCenterClient, search: list[str|re.Pattern]|str|r
         Header('used_memory', fmt='gib'),
     ]
 
-    with out_table(out, title='resourcepools', dir=vcenter.get_out_dir(), env=vcenter.env, headers=headers) as t:
+    with out_table(out, title='resourcepools', dir=vcenter.out_dir, env=vcenter.env, headers=headers) as t:
         for obj in vcenter.iter_objs(vim.ResourcePool, search, normalize=normalize, key=key):            
             try:
                 _logger.info(f"Analyze resource pool {get_obj_name(obj)}")

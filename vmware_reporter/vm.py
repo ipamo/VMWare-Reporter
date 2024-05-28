@@ -109,7 +109,7 @@ def list_vms(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern
         'guestinfo_publish_time',
     ]
 
-    with out_table(out, title='vms', dir=vcenter.get_out_dir(), env=vcenter.env, headers=headers, after1970=True) as t:
+    with out_table(out, title='vms', dir=vcenter.out_dir, env=vcenter.env, headers=headers, after1970=True) as t:
         for obj in vcenter.iter_objs(vim.VirtualMachine, search, normalize=normalize, key=key):  
             try:
                 logger.info(f"Analyze vm {obj.name}")
@@ -365,7 +365,7 @@ def reconfigure_vms(vcenter: VCenterClient, path: str|Path = DEFAULT_RECONFIGURE
         if cf.managedObjectType == vim.VirtualMachine:
             fielddefs.append(FieldDef(cf.name, str, '__customvalue__', cf.key))
     
-    path, tablename = split_excel_path(path, default_table_name=DEFAULT_RECONFIGURE_TABLE, dir=vcenter.get_out_dir(), env=vcenter.env)
+    path, tablename = split_excel_path(path, default_table_name=DEFAULT_RECONFIGURE_TABLE, dir=vcenter.out_dir, env=vcenter.env)
 
     workbook = ExcelWorkbook(path)
     table = workbook.get_or_create_table(tablename)
@@ -580,8 +580,8 @@ def list_vm_disks(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pa
         Header('guests_freespace', fmt='gib'),
     ]
     
-    with (out_table(out, title='vm_disks', headers=disks_headers, dir=vcenter.get_out_dir(), env=vcenter.env) as t_disks,
-          out_table(out, title='vm_disks_per_vm', headers=disks_per_vm_headers, dir=vcenter.get_out_dir(), env=vcenter.env) as t_disks_per_vm):
+    with (out_table(out, title='vm_disks', headers=disks_headers, dir=vcenter.out_dir, env=vcenter.env) as t_disks,
+          out_table(out, title='vm_disks_per_vm', headers=disks_per_vm_headers, dir=vcenter.out_dir, env=vcenter.env) as t_disks_per_vm):
         
         for i, vm in enumerate(vcenter.iter_objs(vim.VirtualMachine, search, normalize=normalize, key=key)):
             if top is not None and i == top:
@@ -635,6 +635,10 @@ def list_vm_disks(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pa
                             identification['uuid'] = value
                         if value := device_backing.pop('contentId', None):
                             identification['contentId'] = value
+                        if value := device_backing.pop('changeId', None):
+                            identification['changeId'] = value
+                        if value := device_backing.pop('parent', None):
+                            identification['parent'] = value
                         if value := device_backing.pop('deviceName', None): # Raw
                             identification['deviceName'] = value
                         if value := device_backing.pop('lunUuid', None): # Raw
@@ -1031,8 +1035,8 @@ def list_vm_nics(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pat
         'guests_network_name',
     ]
     
-    with (out_table(out, title='vm_nics', headers=nics_headers, dir=vcenter.get_out_dir(), env=vcenter.env) as t_nics,
-          out_table(out, title='vm_nics_per_vm', headers=nics_per_vm_headers, dir=vcenter.get_out_dir(), env=vcenter.env) as t_nics_per_vm):
+    with (out_table(out, title='vm_nics', headers=nics_headers, dir=vcenter.out_dir, env=vcenter.env) as t_nics,
+          out_table(out, title='vm_nics_per_vm', headers=nics_per_vm_headers, dir=vcenter.out_dir, env=vcenter.env) as t_nics_per_vm):
         
         for i, vm in enumerate(vcenter.iter_objs(vim.VirtualMachine, search, normalize=normalize, key=key)):
             if top is not None and i == top:

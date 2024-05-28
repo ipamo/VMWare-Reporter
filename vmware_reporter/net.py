@@ -38,7 +38,7 @@ def list_nets(vcenter: VCenterClient, *, out: str = _DEFAULT_OUT):
         'default_vlan',
     ]
 
-    with out_table(out, title='switchs', dir=vcenter.get_out_dir(), env=vcenter.env, headers=switchs_headers) as t:
+    with out_table(out, title='switchs', dir=vcenter.out_dir, env=vcenter.env, headers=switchs_headers) as t:
         for obj in vcenter.iter_objs(vim.DistributedVirtualSwitch):
             uplinks = []
             for portgroup in obj.config.uplinkPortgroup:
@@ -66,7 +66,7 @@ def list_nets(vcenter: VCenterClient, *, out: str = _DEFAULT_OUT):
         'default_vlan',
     ]
 
-    with out_table(out, title='networks', dir=vcenter.get_out_dir(), env=vcenter.env, headers=networks_headers) as t:
+    with out_table(out, title='networks', dir=vcenter.out_dir, env=vcenter.env, headers=networks_headers) as t:
         for obj in sorted(vcenter.iter_objs(vim.Network), key=_network_sortkey):
             if isinstance(obj, vim.dvs.DistributedVirtualPortgroup):
                 typename = 'DVP'

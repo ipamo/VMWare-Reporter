@@ -59,7 +59,7 @@ def list_hosts(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Patte
         'cpu_model',
     ]
 
-    with out_table(out, title='hosts', dir=vcenter.get_out_dir(), env=vcenter.env, headers=headers, after1970=True) as t:
+    with out_table(out, title='hosts', dir=vcenter.out_dir, env=vcenter.env, headers=headers, after1970=True) as t:
         for obj in vcenter.iter_objs(vim.HostSystem, search, normalize=normalize, key=key):  
             try:
                 _logger.info(f"Analyze host {obj.name}")
