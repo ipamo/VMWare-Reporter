@@ -10,9 +10,14 @@ API reference
     :recursive:
 
     vmware_reporter
+    vmware_reporter.cluster
+    vmware_reporter.customvalue
     vmware_reporter.datastore
     vmware_reporter.dump
     vmware_reporter.host
     vmware_reporter.inventory
     vmware_reporter.net
+    vmware_reporter.perf
+    vmware_reporter.resourcepool
+    vmware_reporter.tag
     vmware_reporter.vm

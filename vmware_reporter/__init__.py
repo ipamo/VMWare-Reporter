@@ -7,6 +7,8 @@ import json
 import logging
 import os
 import re
+import urllib3
+import requests
 from collections.abc import Callable, Iterator
 from configparser import ConfigParser
 from contextlib import nullcontext
@@ -16,7 +18,7 @@ from io import IOBase
 from pathlib import Path
 from types import (BuiltinFunctionType, BuiltinMethodType, FunctionType,
                    MethodType)
-from typing import Any, Literal, TypeVar, overload
+from typing import Any, Iterable, Literal, TypeVar, overload
 from uuid import UUID
 
 from pyVim.connect import Disconnect, SmartConnect
@@ -81,6 +83,10 @@ class VCenterClient:
         
         self.logger = logging.getLogger(f'{self.__class__.__module__}.{self.__class__.__qualname__}' + ('' if env == 'default' else f'.{self.env}'))
 
+        self._rest_session = requests.Session()
+        self._categories: dict[UUID,Category] = None
+        self._tags: dict[UUID,Tag] = None
+
 
     #region Enter/connect and exit/close
 
@@ -101,12 +107,7 @@ class VCenterClient:
         addr = addrs[0]
         self.logger.debug(f"Connect to {addr} ({self.host}) with user {self.user}")
 
-        options = {}
-        if 'httpConnectionTimeout' in signature(SmartConnect).parameters:
-            # Introduced in pyVmomi 8.0.0.1 (see https://github.com/vmware/pyvmomi/issues/627)
-            options['httpConnectionTimeout'] = 5.0
-
-        self._service_instance = SmartConnect(host=self.host, user=self.user, pwd=self.password, disableSslCertValidation=self.no_ssl_verify, **options)
+        self._service_instance = SmartConnect(host=self.host, user=self.user, pwd=self.password, disableSslCertValidation=self.no_ssl_verify)
 
 
     def close(self):
@@ -114,6 +115,8 @@ class VCenterClient:
             Disconnect(self._service_instance)
         except AttributeError:
             pass
+
+        self._rest_disconnect()
     
 
     @property
@@ -136,7 +139,7 @@ class VCenterClient:
 
         self._service_content = self.service_instance.RetrieveContent()
         return self._service_content
-
+    
     #endregion
 
 
@@ -325,13 +328,13 @@ class VCenterClient:
         return self._cookie
 
 
-    def wait_for_task(self, tasks: vim.Task|list[vim.Task]|dict[vim.Task,Any]):
+    def wait_for_task(self, tasks: vim.Task|list[vim.Task]|dict[vim.Task,str], *, success_callback=None, error_callback=None):
         """
         Given a service instance and tasks, return after all the tasks are complete.
         - `tasks`: a task, a list of tasks, or a dict associating task to log prefixes.
         """
         task_list: list[vim.Task] = []
-        log_prefixes: dict[vim.Task,Any] = {}
+        log_prefixes: dict[vim.Task,str] = {}
         if isinstance(tasks, dict):
             log_prefixes = tasks
             for task in tasks.keys():
@@ -381,12 +384,16 @@ class VCenterClient:
                             if state == vim.TaskInfo.State.success:
                                 remaining_task_strs.remove(str(task))
                                 if log_prefix := log_prefixes.get(task):
-                                    self.logger.info(f"{log_prefix}: success")
+                                    self.logger.info(f"{log_prefix}: SUCCESS")
+                                if success_callback:
+                                    success_callback(task)
                             elif state == vim.TaskInfo.State.error:
                                 if len(task_list) > 1:
                                     remaining_task_strs.remove(str(task))
                                     log_prefix = log_prefixes.get(task)
-                                    self.logger.error(f"{f'{log_prefix}: ' if log_prefix else ''}{task.info.error}", exc_info=task.info.error)
+                                    self.logger.error(f"{f'{log_prefix}: ' if log_prefix else ''}{task.info.error}", exc_info=task.info.error)                                        
+                                    if error_callback:
+                                        error_callback(task, task.info.error)
                                     task_failures += 1
                                 else:
                                     raise task.info.error
@@ -423,7 +430,8 @@ class VCenterClient:
                     raise ValueError(f"Invalid configuration section \"{_section}\": name \"default\" is reserved")
                 if not env:
                     env = 'default'
-                envs.append(env)
+                if config.get(_section, 'host', fallback=None) is not None:
+                    envs.append(env)
         return envs
         
     @classmethod
@@ -465,8 +473,6 @@ class VCenterClient:
                 return vim.Datastore
             if lower == 'dc':
                 return vim.Datacenter
-            if lower == 'cluster':
-                return vim.ClusterComputeResource
 
             raise KeyError(f"vim managed object type not found for name {value}")
 
@@ -526,7 +532,132 @@ class VCenterClient:
         return by_uuid.get(uuid)
 
     #endregion
+
+
+    #region REST API client
+    # See: https://gist.github.com/em2er/74cdabdd0fd337f382939df3e5f6a68e
+    # See: https://vdc-download.vmware.com/vmwb-repository/dcr-public/1cd28284-3b72-4885-9e31-d1c6d9e26686/71ef7304-a6c9-43b3-a3cd-868b2c236c81/doc/index.html
+
+    def _rest_disconnect(self):
+        if 'vmware-api-session-id' in self._rest_session.headers:
+            self.rest_request('/rest/com/vmware/cis/session', method='DELETE')
+
+    def rest_request(self, path: str, *, method = 'GET', **options):
+        if not 'vmware-api-session-id' in self._rest_session.headers and not 'auth' in options:
+            session_id = self.rest_request('/rest/com/vmware/cis/session', method='POST', auth=(self.user, self.password))
+            self._rest_session.headers.update({'vmware-api-session-id': session_id})
+
+        self.logger.debug("%s %s", method, path)
+        url = f"https://{self.host}{path}"
+
+        with urllib3.warnings.catch_warnings() if self.no_ssl_verify else nullcontext():
+            if self.no_ssl_verify:
+                urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+            response = self._rest_session.request(method, url, verify=not self.no_ssl_verify, **options)
+
+        response.raise_for_status()
+        if response.headers.get('content-type') == 'application/json':
+            dict_response = response.json()
+            self.logger.debug("JSON response: %s", dict_response)
+            return dict_response['value']
+        else:
+            if self.logger.isEnabledFor(logging.DEBUG):
+                text_response = response.text
+                self.logger.debug("TEXT response: %s", text_response)
+            return None
     
+    @property
+    def categories(self):
+        if self._categories is None:
+            self._categories = {}
+            for category_id in self.rest_request('/rest/com/vmware/cis/tagging/category'):
+                structure = self.rest_request(f'/rest/com/vmware/cis/tagging/category/id:{category_id}')
+                category = Category(structure)
+                self._categories[category.uuid] = category
+        return self._categories
+
+    def get_categories(self) -> Iterable[Category]:
+        return self.categories.values()
+
+    def get_category_by_key(self, key: str|UUID):
+        if isinstance(key, str):
+            key = Category.parse_id(key)
+        return self.categories[key]
+
+    @property
+    def tags(self):
+        if self._tags is None:
+            self._tags = {}
+            for tag_id in self.rest_request('/rest/com/vmware/cis/tagging/tag'):
+                data = self.rest_request(f'/rest/com/vmware/cis/tagging/tag/id:{tag_id}')
+                tag = Tag(data, self.categories)
+                self._tags[tag.uuid] = tag
+        return self._tags
+
+    def get_tags(self) -> Iterable[Tag]:
+        return self.tags.values()
+
+    def get_tag_by_key(self, key: str|UUID):
+        if isinstance(key, str):
+            key = Tag.parse_id(key)
+        return self.tags[key]
+    
+    def get_obj_tags(self, obj: vim.ManagedObject):
+        tag_ids = self.rest_request(f'/rest/com/vmware/cis/tagging/tag-association?~action=list-attached-tags', method='POST', json={
+            "object_id": {
+                "id": get_obj_ref(obj),
+                "type": get_obj_typename(obj),
+            }
+        })
+        return [self.get_tag_by_key(tag_id) for tag_id in tag_ids]
+
+    #endregion
+
+
+class Category:
+    def __init__(self, structure):
+        self.uuid = self.parse_id(structure['id'])
+        self.name: str = structure['name']
+        self.description: str = structure['description']
+        self.cardinality: str = structure['cardinality']
+        self.associable_types: list[str] = structure['associable_types']
+
+    @classmethod
+    def parse_id(cls, id: str):                    
+        if m := re.match(r'^urn:vmomi:InventoryServiceCategory:([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}):GLOBAL$', id):
+            return UUID(m[1])
+        else:
+            raise ValueError(f"Invalid category id: {id}")
+        
+    @property
+    def id(self):
+        return f"urn:vmomi:InventoryServiceCategory:{self.uuid}:GLOBAL"
+    
+    def __repr__(self):
+        return self.name
+
+
+class Tag:
+    def __init__(self, structure, categories: dict[UUID,Category]):
+        self.uuid = self.parse_id(structure['id'])
+        self.name: str = structure['name']
+        self.description: str = structure['description']
+        self.category = categories[Category.parse_id(structure['category_id'])]
+
+    @classmethod
+    def parse_id(cls, id: str):                    
+        if m := re.match(r'^urn:vmomi:InventoryServiceTag:([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}):GLOBAL$', id):
+            return UUID(m[1])
+        else:
+            raise ValueError(f"Invalid tag id: {id}")
+        
+    @property
+    def id(self):
+        return f"urn:vmomi:InventoryServiceTag:{self.uuid}:GLOBAL"
+    
+    def __repr__(self):
+        return self.name
+
 
 def _expand_search_from_files(search: list[str|Path|re.Pattern]|str|Path|re.Pattern|None, *, key: Literal['name', 'ref'] = 'name') -> list[str|re.Pattern]|None:
     """
@@ -544,7 +675,10 @@ def _expand_search_from_files(search: list[str|Path|re.Pattern]|str|Path|re.Patt
             raise ValueError(f"Column \"{key}\" not found in {path}")
         for row in table:
             if row[key]:
-                yield row[key]
+                if row.get('status') == 'IGNORE':
+                    _logger.info(f"Ignore {key}")
+                else:
+                    yield row[key]
 
     def expand_from_csv_file(path: Path):
         for row in iter_dicts_from_csv(path):
@@ -580,12 +714,25 @@ def _expand_search_from_files(search: list[str|Path|re.Pattern]|str|Path|re.Patt
     return result
 
 
+def get_obj_name(obj: vim.ManagedObject) -> str:
+    if obj is None:
+        return None
+    
+    if isinstance(obj, vim.ResourcePool) and obj.name == 'Resources' and obj.parent:
+        return f"{obj.parent.name}/{obj.name}"
+    else:
+        return obj.name
+
+
 def get_obj_ref(obj: vim.ManagedObject) -> str:
     """
     Get the value of the Managed Object Reference (MOR) of the given object.
 
     See: https://vdc-repo.vmware.com/vmwb-repository/dcr-public/1ef6c336-7bef-477d-b9bb-caa1767d7e30/82521f49-9d9a-42b7-b19b-9e6cd9b30db1/mo-types-landing.html
     """
+    if obj is None:
+        return None
+    
     text = str(obj)
     m = re.match(r"^'(.*)\:(.*)'$", text)
     if not m:
@@ -599,8 +746,9 @@ def get_obj_ref(obj: vim.ManagedObject) -> str:
 
 def get_obj_path(obj: vim.ManagedEntity, full: bool = False) -> str:
     """ Return the path of the given vim managed entity. """
-    if not obj:
+    if obj is None:
         return None
+    
     if isinstance(obj, vim.Datacenter):
         return obj.name
     if not full:
@@ -613,10 +761,15 @@ def get_obj_path(obj: vim.ManagedEntity, full: bool = False) -> str:
                 
     if not obj.parent:
         return obj.name
-    elif not full and isinstance(obj, vim.ResourcePool) and obj.name == 'Resources':
-        return get_obj_path(obj.parent, full=full)
     else:        
         return get_obj_path(obj.parent, full=full) + "/" + obj.name
+
+
+def get_obj_typename(obj: vim.ManagedObject) -> str:
+    if obj is None:
+        return None
+    
+    return type(obj).__name__.split('.')[-1]
 
 
 def identify_obj(obj: vim.ManagedObject) -> dict:
@@ -846,6 +999,11 @@ def dump_obj(obj: vim.ManagedObject, obj_out: os.PathLike|IOBase, *, title: str 
     data = dictify_obj(obj)
 
     _logger.info(f"Export {title} to {out_name}")
+    
+    if not isinstance(obj_out, IOBase):
+        if dir := os.path.dirname(obj_out):
+            os.makedirs(dir, exist_ok=True)
+
     with nullcontext(obj_out) if isinstance(obj_out, IOBase) else open(obj_out, 'w', encoding='utf-8') as fp:
         json.dump(data, fp=fp, indent=4, cls=ExtendedJSONEncoder, ensure_ascii=False)
 
@@ -853,6 +1011,6 @@ def dump_obj(obj: vim.ManagedObject, obj_out: os.PathLike|IOBase, *, title: str 
 # For docs
 __all__ = (
     '__prog__', '__version__', '__version_tuple__',
-    'VCenterClient',
-    'get_obj_ref', 'get_obj_path', 'identify_obj', 'dictify_value', 'dictify_obj', 'dump_obj',
+    'VCenterClient', 'Category', 'Tag',
+    'get_obj_name', 'get_obj_ref', 'get_obj_path', 'get_obj_typename', 'identify_obj', 'dictify_value', 'dictify_obj', 'dump_obj',
 )

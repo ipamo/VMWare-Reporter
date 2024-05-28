@@ -38,8 +38,8 @@ def list_hosts(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Patte
         'ref',
         'overall_status',
         'config_status',
-        'cpu_packages',
         'cpu_cores',
+        'cpu_mhz',
         Header('memory', fmt='gib'),
         'cluster',
         'state',        
@@ -55,6 +55,7 @@ def list_hosts(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Patte
         'model',
         'serial',
         'enclosure',
+        'cpu_packages',
         'cpu_model',
     ]
 
@@ -70,8 +71,8 @@ def list_hosts(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Patte
                     get_obj_ref(obj),
                     obj.overallStatus,
                     obj.configStatus,
-                    obj.hardware.cpuInfo.numCpuPackages,
                     obj.hardware.cpuInfo.numCpuCores,
+                    obj.summary.hardware.cpuMhz,
                     obj.hardware.memorySize,
                     obj.parent.name if obj.parent and obj.parent != obj else None,
                     obj.runtime.dasHostState.state if obj.runtime.dasHostState else None,                                        
@@ -87,6 +88,7 @@ def list_hosts(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Patte
                     obj.hardware.systemInfo.model,
                     oii.get('SerialNumberTag'),
                     oii.get('EnclosureSerialNumberTag'),
+                    obj.hardware.cpuInfo.numCpuPackages,
                     obj.summary.hardware.cpuModel,
                 ])
             

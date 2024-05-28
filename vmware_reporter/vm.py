@@ -13,14 +13,15 @@ from io import IOBase
 from ipaddress import IPv4Address, IPv6Address, ip_address
 from pathlib import Path
 from typing import Any, Callable, Literal
+from time import sleep
 
 from pyVmomi import vim
 from zut import (Header, add_func_command, get_description_text, get_help_text,
                  gigi_bytes, out_table, slugify)
 from zut.excel import ExcelRow, ExcelWorkbook, split_excel_path
 
-from . import (VCenterClient, dictify_obj, dictify_value, get_obj_path,
-               get_obj_ref)
+from . import (Tag, VCenterClient, dictify_obj, dictify_value, get_obj_name, get_obj_path,
+               get_obj_ref, CONFIG, CONFIG_SECTION)
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +48,9 @@ def add_vm_commands(commands_subparsers: _SubParsersAction[ArgumentParser], *, n
 #region List
 
 def list_vms(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern = None, *, normalize: bool = False, key: str = 'name', out: os.PathLike|IOBase = _DEFAULT_OUT):
+    extract_categories = CONFIG.getlist(CONFIG_SECTION, 'extract_categories', delimiter=',')
+    extract_custom_values = CONFIG.getlist(CONFIG_SECTION, 'extract_custom_values', delimiter=',')
+
     headers = [
         'name',
         'ref',
@@ -63,8 +67,20 @@ def list_vms(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern
         'nic_count',
         # Dossier / rangement
         'folder',
-        'Appartenance',
-        'other_custom_values',
+    ]
+
+    for cat in extract_categories:
+        headers.append(cat)
+
+    headers += [
+        'other_tags' if extract_categories else 'tags',
+    ]
+
+    for cv in extract_custom_values:
+        headers.append(cv)
+    
+    headers += [
+        'other_custom_values' if extract_custom_values else 'custom_values',
         'annotation',
         'create_date',
         'change_date',
@@ -73,7 +89,8 @@ def list_vms(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern
         'network',
         'disk',
         # ResourcePool / runtime
-        'resource_pool',
+        'cluster',
+        'resourcepool',
         'host',
         'power_state',
         'paused',
@@ -99,48 +116,64 @@ def list_vms(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern
 
                 disks = extract_disks(obj)
                 nics = extract_nics(obj, vcenter=vcenter)
+                extra_config = dictify_value(obj.config.extraConfig) if obj.config is not None else {}
 
-                custom_values = get_custom_values(obj)
-                Appartenance = custom_values.pop('Appartenance', None)
-                other_custom_values = ' | '.join(f"{key}: {value}" for key, value in custom_values.items())
-
-                extra_config = dictify_value(obj.config.extraConfig)
-
-                t.append([
+                row = [
                     obj.name,
                     get_obj_ref(obj),
                     obj.overallStatus,
                     obj.configStatus,
-                    obj.config.template,
+                    obj.config.template if obj.config is not None else None,
                     # Config
-                    obj.config.hardware.numCPU,
-                    obj.config.hardware.numCoresPerSocket,
-                    obj.config.hardware.memoryMB * 1024 * 1024,
-                    disks.capacity,
-                    disks.freespace,
+                    obj.config.hardware.numCPU if obj.config is not None else None,
+                    obj.config.hardware.numCoresPerSocket if obj.config is not None else None,
+                    obj.config.hardware.memoryMB * 1024 * 1024 if obj.config is not None else None,
+                    disks.capacity if disks is not None else None,
+                    disks.freespace if disks is not None else None,
                     obj.summary.config.numVirtualDisks,
                     obj.summary.config.numEthernetCards,
                     # Dossier / rangement
                     get_obj_path(obj.parent),
-                    Appartenance,
+                ]
+
+                tags = vcenter.get_obj_tags(obj)
+                for category_name in extract_categories:
+                    category_tags: list[Tag] = []
+                    for tag in tags:
+                        if tag.category.name == category_name:
+                            category_tags.append(tag)
+                    for tag in category_tags:
+                        tags.remove(tag)
+                    row.append([tag.name for tag in category_tags])
+
+                # other tags
+                row.append([f"{tag.name} ({tag.category.name})" for tag in tags])
+                
+                custom_values = get_custom_values(obj)
+                for cv in extract_custom_values:
+                    row.append(custom_values.pop(cv, None))
+                other_custom_values = ' | '.join(f"{key}: {value}" for key, value in custom_values.items())
+
+                row += [
                     other_custom_values,
-                    obj.config.annotation,
-                    obj.config.createDate,
-                    datetime.fromisoformat(obj.config.changeVersion),
+                    obj.config.annotation if obj.config is not None else None,
+                    obj.config.createDate if obj.config is not None else None,
+                    datetime.fromisoformat(obj.config.changeVersion) if obj.config is not None else None,
                     # Config details
                     obj.guest.hostName,
-                    nics.to_summary(ip_version=4),
-                    disks.to_summary(),
+                    nics.to_summary(ip_version=4) if nics is not None else None,
+                    disks.to_summary() if disks is not None else None,
                     # ResourcePool / runtime
-                    get_obj_path(obj.resourcePool),
-                    obj.runtime.host.name,
+                    obj.resourcePool.owner.name if obj.resourcePool else None,
+                    get_obj_name(obj.resourcePool),
+                    obj.runtime.host.name if obj.runtime.host is not None else None,
                     obj.runtime.powerState,
                     obj.runtime.paused,
                     obj.runtime.connectionState,
                     obj.runtime.bootTime,
-                    obj.config.version,
+                    obj.config.version if obj.config is not None else None,
                     # Guest info
-                    get_os_family(extra_config, obj.config.guestFullName),
+                    get_os_family(extra_config, obj.config.guestFullName) if obj.config is not None else None,
                     get_os_version(extra_config),
                     get_os_distro_version(extra_config),
                     get_os_kernel_version(extra_config),
@@ -149,10 +182,12 @@ def list_vms(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern
                     get_tools_version_number(obj.guest.toolsVersion),  # version number
                     get_tools_version(extra_config, obj.guest.toolsVersion),      
                     get_guestinfo_publish_time(extra_config),
-                ])
+                ]
+                
+                t.append(row)
             
             except Exception as err:
-                logger.exception(f"Error while analyzing {str(obj)}")
+                logger.exception(f"Error while analyzing {obj}: {err}")
 
 
 def _add_arguments(parser: ArgumentParser):
@@ -166,22 +201,29 @@ list_vms.add_arguments = _add_arguments
 #endregion
 
 
-#region Start, stop, suspend
+#region Start, stop, suspend, reconfigure
 
-def start_vms(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern = None, *, normalize: bool = False, key: str = 'name', **options):
-    _invoke_and_track('PowerOn', vcenter, search, normalize=normalize, key=key)
+_DEFAULT_START_BATCH = 10
+_DEFAULT_BATCH_PAUSE = 60.0
+
+def start_vms(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern = None, *, normalize: bool = False, key: str = 'name', batch: int = _DEFAULT_START_BATCH, batch_pause: float = _DEFAULT_BATCH_PAUSE):
+    _invoke_and_track('PowerOn', 'poweredOn', vcenter, search, normalize=normalize, key=key, batch=batch, batch_pause=batch_pause)
+
+def _add_arguments(parser: ArgumentParser):
+    parser.add_argument('search', nargs='*', help="Search term(s).")
+    parser.add_argument('-n', '--normalize', action='store_true', help="Normalise search term(s).")
+    parser.add_argument('-k', '--key', choices=['name', 'ref'], default='name', help="Search key (default: %(default)s).")
+    parser.add_argument('-b', '--batch', type=int, default=_DEFAULT_START_BATCH, help="Batch size: maximum number of VMs to start at the same time (default: %(default)s).")
+    parser.add_argument('--batch-pause', type=float, default=_DEFAULT_BATCH_PAUSE, help="Batch pause: duration of pauses between batchs, in seconds (default: %(default)s).")
+
+start_vms.add_arguments = _add_arguments
+
 
 def stop_vms(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern = None, *, normalize: bool = False, key: str = 'name', force: bool = False):
     if force:
-        _invoke_and_track('PowerOff', vcenter, search, normalize=normalize, key=key)
+        _invoke_and_track('PowerOff', 'poweredOff', vcenter, search, normalize=normalize, key=key)
     else:
-        _invoke_and_track('ShutdownGuest', vcenter, search, normalize=normalize, key=key)
-
-def suspend_vms(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern = None, *, normalize: bool = False, key: str = 'name', force: bool = False):
-    if force:
-        _invoke_and_track('Suspend', vcenter, search, normalize=normalize, key=key)
-    else:
-        _invoke_and_track('StandbyGuest', vcenter, search, normalize=normalize, key=key)
+        _invoke_and_track('ShutdownGuest', 'poweredOff', vcenter, search, normalize=normalize, key=key)
 
 def _add_arguments(parser: ArgumentParser):
     parser.add_argument('search', nargs='*', help="Search term(s).")
@@ -189,33 +231,89 @@ def _add_arguments(parser: ArgumentParser):
     parser.add_argument('-k', '--key', choices=['name', 'ref'], default='name', help="Search key (default: %(default)s).")
     parser.add_argument('-f', '--force', action='store_true', help="Force operation.")
 
-start_vms.add_arguments = _add_arguments
 stop_vms.add_arguments = _add_arguments
+
+
+def suspend_vms(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern = None, *, normalize: bool = False, key: str = 'name', force: bool = False):
+    if force:
+        _invoke_and_track('Suspend', 'suspended', vcenter, search, normalize=normalize, key=key)
+    else:
+        _invoke_and_track('StandbyGuest', 'suspended', vcenter, search, normalize=normalize, key=key)
+
+def _add_arguments(parser: ArgumentParser):
+    parser.add_argument('search', nargs='*', help="Search term(s).")
+    parser.add_argument('-n', '--normalize', action='store_true', help="Normalise search term(s).")
+    parser.add_argument('-k', '--key', choices=['name', 'ref'], default='name', help="Search key (default: %(default)s).")
+    parser.add_argument('-f', '--force', action='store_true', help="Force operation.")
+
 suspend_vms.add_arguments = _add_arguments
 
 
-def _invoke_and_track(op: str, vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern = None, *, normalize: bool = False, key: str = 'name'):
+def _invoke_and_track(op: str, target_status: str, vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern = None, *, normalize: bool = False, key: str = 'name', batch: int = None, batch_pause: float = _DEFAULT_BATCH_PAUSE):
     # Idea: https://github.com/reubenur-rahman/vmware-pyvmomi-examples/blob/master/vm_power_ops.py
-    tasks = {}
-    for vm in vcenter.iter_objs(vim.VirtualMachine, search, normalize=normalize, key=key):
+    task_helpers: dict[vim.Task,ReportHelper] = {}
+    
+    def task_success_callback(task):
+        helper = task_helpers[task]
+        if helper.row:
+            helper.row['status'] = 'SUCCESS'
+            helper.row['details'] = None
+
+    def task_error_callback(task, details):
+        helper = task_helpers[task]
+        if helper.row:
+            helper.row['status'] = 'ERROR'
+            helper.row['details'] = details
+
+    tasks: dict[vim.VirtualMachine,str] = {}
+    loop_objs: dict[vim.VirtualMachine,ReportHelper] = {}
+    for i, vm in enumerate(vcenter.iter_objs(vim.VirtualMachine, search, normalize=normalize, key=key)):
+        if batch is not None and i > 0 and i % batch == 0:
+            logger.info(f"Handled {i} VMs, wait for {batch_pause} seconds")
+            sleep(batch_pause)
+
         log_prefix = f"{vm.name} ({get_obj_ref(vm)})"
         logger.info(f"{op} {log_prefix}...")
         func = getattr(vm, op)
+        helper = ReportHelper(log_prefix=log_prefix)
         try:
             task = func()
             if task is not None:
-                tasks[task] = log_prefix
+                tasks[task] = helper.log_prefix
+                task_helpers[task] = helper
+            else:
+                loop_objs[vm] = helper
+        except vim.fault.InvalidPowerState as err:
+            helper.error(f"Invalid current state \"{err.existingState}\" (expected \"{err.requestedState}\")")
+        except vim.fault.ToolsUnavailable as err:
+            helper.error(f"VMWare Tools is not running")
         except Exception as err:
-            logger.error(f"{log_prefix}: {str(err)}")
+            helper.error(f"{err}")
 
     if tasks:
-        vcenter.wait_for_task(tasks)
+        vcenter.wait_for_task(tasks, success_callback=task_success_callback, error_callback=task_error_callback)
 
+    total_seconds = 60
+    remaining_seconds = total_seconds
+    while len(loop_objs) > 0 and remaining_seconds > 0:
+        if remaining_seconds % 10 == 0:
+            logger.info("Wait %s entities to reach status %s (%s seconds max)", len(loop_objs), target_status, remaining_seconds)
+        sleep(1)
 
-#endregion
+        vms_to_remove = []
+        for vm, helper in loop_objs.items():
+            if vm.runtime.powerState == target_status:
+                helper.success()
+                vms_to_remove.append(vm)
 
+        for vm in vms_to_remove:
+            del loop_objs[vm]
 
-#region Reconfigure
+        remaining_seconds -= 1
+
+    for vm, helper in loop_objs.items():
+        helper.error(f"VM still not {target_status} after {total_seconds} seconds")
+
 
 DEFAULT_RECONFIGURE_FILE = 'vms_reconfigure.xlsx'
 DEFAULT_RECONFIGURE_TABLE = 'vms'
@@ -224,25 +322,11 @@ def reconfigure_vms(vcenter: VCenterClient, path: str|Path = DEFAULT_RECONFIGURE
     """
     Reconfigure VMs (vcpu, memory, annotation, custom fields) as a mass operation, using an Excel file.
     """
-    class Helper:
-        def __init__(self, row: ExcelRow, found: bool = False):
-            self.row = row
-            self.found = found
-
-        def report_ok(self, details: str):
-            logger.info(f"OK: {details}")
-            self.row['status'] = 'OK'
-            self.row['details'] = details
-
-        def report_error(self, details: str):
-            logger.error(details)
-            self.row['status'] = 'ERROR'
-            self.row['details'] = details
-            
+      
     class FieldDef:
         def __init__(self, name: str, type: type, getter: Callable[[vim.VirtualMachine],Any]|Literal['__customvalue__'], target_key:str|int, target_formatter: Callable[[vim.VirtualMachine],Any] = None):
             """
-            - `key`: if str, this is the reconfigure ConfigSpec argument to use. If int, this is the customfield key to use.
+            - `key`: if str, this is the reconfigure ConfigSpec argument to use. If int, this is the custom_value key to use.
             """
             self.name = name
             self.type = type
@@ -277,24 +361,30 @@ def reconfigure_vms(vcenter: VCenterClient, path: str|Path = DEFAULT_RECONFIGURE
         FieldDef('annotation', str, lambda vm: vm.config.annotation, 'annotation'),
     ]
 
-    for customfield in vcenter.service_content.customFieldsManager.field:
-        if customfield.managedObjectType == vim.VirtualMachine:
-            fielddefs.append(FieldDef(customfield.name, str, '__customvalue__', customfield.key))
+    for cf in vcenter.service_content.customFieldsManager.field:
+        if cf.managedObjectType == vim.VirtualMachine:
+            fielddefs.append(FieldDef(cf.name, str, '__customvalue__', cf.key))
     
     path, tablename = split_excel_path(path, default_table_name=DEFAULT_RECONFIGURE_TABLE, dir=vcenter.get_out_dir(), env=vcenter.env)
 
     workbook = ExcelWorkbook(path)
     table = workbook.get_or_create_table(tablename)
     
-    helpers: dict[str,Helper] = {}
+    helpers: dict[str,ReportHelper] = {}
     search_by_ref = 'ref' in table.column_names
     for row in table:
         if search_by_ref:
             if row['ref']:
-                helpers[row['ref']] = Helper(row)
+                if row.get('status') == 'IGNORE':
+                    logger.info(f"Ignore {row['ref']}")
+                    continue
+                helpers[row['ref']] = ReportHelper(row=row)
         else:
             if row['name']:
-                helpers[slugify(row['name'])] = Helper(row)
+                if row.get('status') == 'IGNORE':
+                    logger.info(f"Ignore {row['name']}")
+                    continue
+                helpers[slugify(row['name'])] = ReportHelper(row=row)
         row['status'] = None
         row['details'] = None
     
@@ -320,15 +410,15 @@ def reconfigure_vms(vcenter: VCenterClient, path: str|Path = DEFAULT_RECONFIGURE
 
         try:
             if search_by_ref and slugify(vm.name) != slugify(row['name']):
-                helper.report_error(f"Invalid VM name: expected {vm.name}")
+                helper.error(f"Invalid VM name: expected {vm.name}")
                 continue
 
             if vm.config.template:
-                helper.report_error(f"This is a template")
+                helper.error(f"This is a template")
                 continue
 
             if vm.runtime.powerState != 'poweredOff':
-                helper.report_error(f"Not powered off")
+                helper.error(f"Not powered off")
                 continue
 
             config_previous: dict[str|int,Any] = {}
@@ -355,11 +445,11 @@ def reconfigure_vms(vcenter: VCenterClient, path: str|Path = DEFAULT_RECONFIGURE
                     config_targets[fielddef.target_key] = fielddef.format_for_target(target)
 
             if invalid_current:
-                helper.report_error(f"Invalid {invalid_current}")
+                helper.error(f"Invalid {invalid_current}")
                 continue
 
             if not config_targets:
-                helper.report_ok("Nothing to do")
+                helper.success("Nothing to do")
                 continue
 
             config_targets_reconfigure = {}
@@ -382,7 +472,7 @@ def reconfigure_vms(vcenter: VCenterClient, path: str|Path = DEFAULT_RECONFIGURE
                 vcenter.service_content.customFieldsManager.SetField(vm, key, value)
 
             # Verification
-            status_ok = True
+            success = True
             details = ''
 
             for fielddef in fielddefs:
@@ -392,16 +482,16 @@ def reconfigure_vms(vcenter: VCenterClient, path: str|Path = DEFAULT_RECONFIGURE
                 previous_value = config_previous[fielddef.target_key]
                 target_value = config_targets[fielddef.target_key]
                 new_value = fielddef.format_for_target(fielddef.get_from_vm(vm))
-                details += (', ' if details else '') + f"{fielddef.target_key}: {previous_value} -> {'(empty)' if new_value == '' else new_value}"
+                details += (', ' if details else '') + f"{fielddef.target_key}: {'(empty)' if previous_value == '' else previous_value} -> {'(empty)' if new_value == '' else new_value}"
 
                 if new_value != target_value:
-                    status_ok = False
+                    success = False
                     details += ' [ERROR]'
 
-            if status_ok:
-                helper.report_ok(details)
+            if success:
+                helper.success(details)
             else:
-                helper.report_error(details)
+                helper.error(details)
         
         except Exception as err:
             logger.exception(str(err))
@@ -411,7 +501,7 @@ def reconfigure_vms(vcenter: VCenterClient, path: str|Path = DEFAULT_RECONFIGURE
     # Report not found
     for key, helper in helpers.items():
         if not helper.found:
-            helper.report_error(f"VM {key} not found")
+            helper.error(f"VM {key} not found")
 
     workbook.close()
 
@@ -424,6 +514,24 @@ def _add_arguments(parser: ArgumentParser):
 reconfigure_vms.add_arguments = _add_arguments
 
 
+class ReportHelper:
+    def __init__(self, *, log_prefix: str, row: ExcelRow = None, found: bool = False):
+        self.log_prefix = log_prefix
+        self.row = row
+        self.found = found
+
+    def success(self, details: str = None):
+        logger.info((f"{self.log_prefix }: " if self.log_prefix else '') + f"SUCCESS{f': {details}' if details else ''}")
+        if self.row:
+            self.row['status'] = 'SUCCESS'
+            self.row['details'] = details
+
+    def error(self, details: str):
+        logger.error((f"{self.log_prefix }: " if self.log_prefix else '') + f"{details}")
+        if self.row:
+            self.row['status'] = 'ERROR'
+            self.row['details'] = details
+
 #endregion
 
 
@@ -435,9 +543,6 @@ def list_vm_disks(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pa
     """
     disks_per_vm_headers = [
         'vm',
-        'power_state',
-        'os_family',
-        'os_version',
         'device_disks',
         'guest_disks',
         'with_mappings',
@@ -457,15 +562,15 @@ def list_vm_disks(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pa
 
     disks_headers = [
         'vm',
-        'power_state',
-        'os_family',
-        'os_version',
         'key',
         'backing',
         'datastore',
         'filename',
         'diskmode',
         'sharing',
+        'thin_provisioned',
+        'compatibility_mode',
+        'identification',
         'remaining_backing_info',
         Header('capacity', fmt='gib'),
         Header('freespace', fmt='gib'),
@@ -473,7 +578,6 @@ def list_vm_disks(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pa
         'guests',
         Header('guests_capacity', fmt='gib'),
         Header('guests_freespace', fmt='gib'),
-        'capacity_loss_pct',
     ]
     
     with (out_table(out, title='vm_disks', headers=disks_headers, dir=vcenter.get_out_dir(), env=vcenter.env) as t_disks,
@@ -488,92 +592,94 @@ def list_vm_disks(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pa
 
                 info = extract_disks(vm)
 
-                extra_config = dictify_value(vm.config.extraConfig)
-                os_family = get_os_family(extra_config, vm.config.guestFullName)
-                os_version = get_os_version(extra_config)
-
                 mapped_guests: list[vim.vm.GuestInfo.DiskInfo] = []
-                for disk in info.disks:
-                    for guest in disk.guests:
-                        mapped_guests.append(guest)
+                if info is not None:
+                    for disk in info.disks:
+                        for guest in disk.guests:
+                            mapped_guests.append(guest)
 
                 t_disks_per_vm.append([
                     vm.name, # vm
-                    vm.runtime.powerState, # power_state
-                    os_family,
-                    os_version,
-                    len(info.disks), # 'device_disks',
-                    len(mapped_guests) + len(info.unmapped_guests), # 'guest_disks',
-                    len(mapped_guests), # 'with_mappings',
-                    len(info.unmapped_guests), # 'without_mappings',
-                    sorted(f'{guest.diskPath} ({guest.filesystemType})' if guest.filesystemType else guest.diskPath for guest in mapped_guests), # 'mapped_guest',
-                    sorted(f'{guest.diskPath} ({guest.filesystemType})' if guest.filesystemType else guest.diskPath for guest in info.unmapped_guests),# 'unmapped_guests',
-                    info.capacity,
-                    info.freespace,
-                    info.mapped_disks_capacity if mapped_guests else None,
-                    info.mapped_guests_capacity if mapped_guests else None,
-                    info.mapped_guests_freespace if mapped_guests else None,
-                    info.unmapped_disks_capacity if info.unmapped_disks_capacity > 0 else None,
-                    info.unmapped_guests_capacity if info.unmapped_guests else None,
-                    info.unmapped_guests_freespace if info.unmapped_guests else None,
-                    info.issues,
+                    len(info.disks) if info is not None else None, # 'device_disks',
+                    len(mapped_guests) + len(info.unmapped_guests) if info is not None else None, # 'guest_disks',
+                    len(mapped_guests) if info is not None else None, # 'with_mappings',
+                    len(info.unmapped_guests) if info is not None else None, # 'without_mappings',
+                    sorted(f'{guest.diskPath.rstrip(':\\')} ({guest.filesystemType})' if guest.filesystemType else guest.diskPath.rstrip(':\\') for guest in mapped_guests) if info is not None else None, # 'mapped_guest',
+                    sorted(f'{guest.diskPath.rstrip(':\\')} ({guest.filesystemType})' if guest.filesystemType else guest.diskPath.rstrip(':\\') for guest in info.unmapped_guests) if info is not None else None, # 'unmapped_guests',
+                    info.capacity if info is not None else None,
+                    info.freespace if info is not None else None,
+                    info.mapped_disks_capacity if info is not None and mapped_guests else None,
+                    info.mapped_guests_capacity if info is not None and mapped_guests else None,
+                    info.mapped_guests_freespace if info is not None and mapped_guests else None,
+                    info.unmapped_disks_capacity if info is not None and info.unmapped_disks_capacity > 0 else None,
+                    info.unmapped_guests_capacity if info is not None and info.unmapped_guests else None,
+                    info.unmapped_guests_freespace if info is not None and info.unmapped_guests else None,
+                    info.issues if info is not None else None,
                 ])
 
-                for disk in info.disks:
-                    device_backing = dictify_obj(disk.device.backing)
-                    backing_typename = type(disk.device.backing).__name__
-                    if backing_typename.startswith('vim.vm.device.VirtualDisk.'):
-                        backing_typename = backing_typename[len('vim.vm.device.VirtualDisk.'):]
-                    datastore = device_backing.pop('datastore', None)
-                    fileName = device_backing.pop('fileName', None)
-                    diskMode = device_backing.pop('diskMode', None)
-                    sharing = device_backing.pop('sharing', None)
+                if info is not None:
+                    for disk in info.disks:
+                        device_backing = dictify_obj(disk.device.backing)
+                        backing_typename = type(disk.device.backing).__name__
+                        if backing_typename.startswith('vim.vm.device.VirtualDisk.'):
+                            backing_typename = backing_typename[len('vim.vm.device.VirtualDisk.'):]
+                        datastore = device_backing.pop('datastore', None)
+                        fileName = device_backing.pop('fileName', None)
+                        diskMode = device_backing.pop('diskMode', None)
+                        sharing = device_backing.pop('sharing', None)
+                        thinProvisioned = device_backing.pop('thinProvisioned', None)
+                        compatibilityMode = device_backing.pop('compatibilityMode', None)
+                        
+                        identification = {}
+                        if value := device_backing.pop('uuid', None):
+                            identification['uuid'] = value
+                        if value := device_backing.pop('contentId', None):
+                            identification['contentId'] = value
+                        if value := device_backing.pop('deviceName', None): # Raw
+                            identification['deviceName'] = value
+                        if value := device_backing.pop('lunUuid', None): # Raw
+                            identification['lunUuid'] = value
+                        
+                        t_disks.append([
+                            vm.name, # vm
+                            disk.device.key, # key
+                            backing_typename, # backing
+                            datastore['name'] if datastore else None, # datastore
+                            fileName,
+                            diskMode,
+                            sharing,
+                            thinProvisioned,
+                            compatibilityMode,
+                            identification,
+                            device_backing, # remaining_backing_info
+                            disk.capacity,
+                            disk.freespace,
+                            disk.guests_mapping,
+                            sorted(f'{guest.diskPath.rstrip(':\\')} ({guest.filesystemType})' if guest.filesystemType else guest.diskPath.rstrip(':\\') for guest in disk.guests), # guests
+                            disk.guests_capacity if disk.guests else None,
+                            disk.guests_freespace if disk.guests else None,
+                        ])
 
-                    capacity_loss = disk.capacity - disk.guests_capacity if disk.guests else None
-                    capacity_loss_pct = 100 * capacity_loss / disk.capacity if disk.guests else None
-                    
-                    t_disks.append([
-                        vm.name, # vm
-                        vm.runtime.powerState, # power_state
-                        os_family,
-                        os_version,
-                        disk.device.key, # key
-                        backing_typename, # backing
-                        datastore['name'] if datastore else None, # datastore
-                        fileName,
-                        diskMode,
-                        sharing,
-                        device_backing, # remaining_backing_info
-                        disk.capacity,
-                        disk.freespace,
-                        disk.guests_mapping,
-                        sorted(f'{guest.diskPath} ({guest.filesystemType})' if guest.filesystemType else guest.diskPath for guest in disk.guests), # guests
-                        disk.guests_capacity if disk.guests else None,
-                        disk.guests_freespace if disk.guests else None,
-                        capacity_loss_pct,
-                    ])
-
-                for guest in [*info.unmapped_guests, *info.ignored_guests]:
-                    t_disks.append([
-                        vm.name, # vm
-                        vm.runtime.powerState, # power_state
-                        os_family,
-                        os_version,
-                        None, # key
-                        guest.mappings, # backing
-                        None, # datastore
-                        None, # filename
-                        None, # diskMode
-                        None, # sharing
-                        None, # remaining_backing_info
-                        None, # capacity
-                        None, # freespace
-                        'ignored' if guest in info.ignored_guests else 'unmapped', # mapping
-                        f'{guest.diskPath} ({guest.filesystemType})' if guest.filesystemType else guest.diskPath, # guests
-                        guest.capacity, # guests_capacity
-                        guest.freeSpace, # guests_freespace
-                        None, # capacity_loss_pct
-                    ])
+                    for guest in [*info.unmapped_guests, *info.ignored_guests]:
+                        t_disks.append([
+                            vm.name, # vm
+                            None, # key
+                            guest.mappings, # backing
+                            None, # datastore
+                            None, # filename
+                            None, # diskMode
+                            None, # sharing
+                            None, # thin_provisioned
+                            None, # compatibility_mode
+                            None, # identification'
+                            None, # remaining_backing_info
+                            None, # capacity
+                            None, # freespace
+                            'ignored' if guest in info.ignored_guests else 'unmapped', # mapping
+                            f'{guest.diskPath.rstrip(':\\')} ({guest.filesystemType})' if guest.filesystemType else guest.diskPath.rstrip(':\\'), # guests
+                            guest.capacity, # guests_capacity
+                            guest.freeSpace, # guests_freespace
+                        ])
 
             except Exception as err:
                 logger.exception(f"Error while analyzing {str(vm)} disks: {err}")
@@ -590,6 +696,10 @@ list_vm_disks.add_arguments = _add_arguments
 
 
 def extract_disks(vm: vim.VirtualMachine):
+    if vm.config is None:
+        # VM is not yet configured
+        return None
+    
     info = VmDisks(vm)
 
     # Retrieve disk devices
@@ -648,12 +758,12 @@ def extract_disks(vm: vim.VirtualMachine):
                 disk.guests_capacity += guest.capacity
                 disk.guests_freespace += guest.freeSpace
             if disk.guests_capacity > disk.capacity:
-                info._append_issue(f"Inconsistent capacity ({disk.guests_capacity:,}) for guests {', '.join(guest.diskPath for guest in disk.guests)} (device {disk.device.key} capacity: {disk.capacity:,})")
+                info._append_issue(f"Inconsistent capacity ({disk.guests_capacity:,}) for guests {', '.join(guest.diskPath.rstrip(':\\') for guest in disk.guests)} (device {disk.device.key} capacity: {disk.capacity:,})")
 
     # Identify guests to ignore
     info._identify_ignored_guests()
     
-    # Try to map remaining guests by capacity
+    # Try to map remaining guests automatically
     unmapped_guests = sorted([guest for guest in info.unmapped_guests], key=lambda obj: obj.capacity, reverse=True)
     unmapped_disks = sorted([disk for disk in info.disks if not disk.guests], key=lambda disk: disk.capacity, reverse=True)
 
@@ -680,7 +790,7 @@ def extract_disks(vm: vim.VirtualMachine):
                 disk.guests.append(guest)
                 disk.guests_capacity += guest.capacity
                 disk.guests_freespace += guest.freeSpace
-                disk.guests_mapping = 'capacity'
+                disk.guests_mapping = 'auto'
 
     # Finalize capacity and freespace sums
     for disk in info.disks:
@@ -700,7 +810,7 @@ def extract_disks(vm: vim.VirtualMachine):
     # (estimation of unmapped disk freespace)
     if info.unmapped_disks_capacity > 0:
         if info.unmapped_guests_capacity > info.unmapped_disks_capacity:
-            info.unmapped_disks_freespace = info.unmapped_guests_freespace * (info.unmapped_disks_capacity / info.unmapped_guests_capacity)
+            info.unmapped_disks_freespace = int(info.unmapped_guests_freespace * (info.unmapped_disks_capacity / info.unmapped_guests_capacity))
         else:
             info.unmapped_disks_freespace = info.unmapped_guests_freespace + (info.unmapped_disks_capacity - info.unmapped_guests_capacity)
 
@@ -769,23 +879,23 @@ class VmDisks:
         for guest in self.ignored_guests:
             yield guest
 
-    def to_dict(self):
+    def to_dict(self, bytes=False):
         data = []
 
         for disk in self.disks:
-            data.append(disk.to_dict())
+            data.append(disk.to_dict(bytes=bytes))
 
         if self.unmapped_guests:
             guests_data = []
             data.append({'guests_mapping': 'unmapped', 'guests':  guests_data})
             for guest in self.unmapped_guests:
-                guests_data.append(self._get_guest_dict(guest))
+                guests_data.append(self._get_guest_dict(guest, bytes=bytes))
 
         if self.ignored_guests:
             guests_data = []
             data.append({'guests_mapping': 'ignored', 'guests':  guests_data})
             for guest in self.ignored_guests:
-                guests_data.append(self._get_guest_dict(guest))
+                guests_data.append(self._get_guest_dict(guest, bytes=bytes))
 
         return data
     
@@ -806,11 +916,11 @@ class VmDisks:
         return result
     
     @classmethod
-    def _get_guest_dict(cls, guest: vim.vm.GuestInfo.DiskInfo):
+    def _get_guest_dict(cls, guest: vim.vm.GuestInfo.DiskInfo, bytes=False):
         data = {}
         data['path'] = guest.diskPath
-        data['capacity'] = gigi_bytes(guest.capacity)
-        data['freespace'] = gigi_bytes(guest.freeSpace)
+        data['capacity'] = guest.capacity if bytes else gigi_bytes(guest.capacity)
+        data['freespace'] = guest.freeSpace if bytes else gigi_bytes(guest.freeSpace)
         if value := guest.filesystemType:
             data['filesystem'] = value
         return data
@@ -825,7 +935,7 @@ class VmDisk:
     def __init__(self, device: vim.vm.device.VirtualDisk):
         self.device = device
         self.guests: list[vim.vm.GuestInfo.DiskInfo] = []
-        self.guests_mapping: Literal['key','capacity'] = None
+        self.guests_mapping: Literal['key','auto'] = None
 
         self.capacity: int = device.capacityInBytes
         """ Device capacities. """
@@ -839,13 +949,13 @@ class VmDisk:
         self.guests_freespace: int = 0
         """ Sum of guest freespaces. """
 
-    def to_dict(self):
+    def to_dict(self, bytes=False):
         data = {}
         data['key'] = self.device.key
-        data['capacity'] = gigi_bytes(self.capacity)
+        data['capacity'] = self.capacity if bytes else gigi_bytes(self.capacity)
 
         if self.guests:
-            data['freespace'] = gigi_bytes(self.freespace)
+            data['freespace'] = self.freespace if bytes else gigi_bytes(self.freespace)
 
         backing_typename = type(self.device.backing).__name__
         if backing_typename.startswith('vim.vm.device.VirtualDisk.'):
@@ -866,12 +976,11 @@ class VmDisk:
             data['guests'] = []
 
             for guest in self.guests:
-                data['guests'].append(VmDisks._get_guest_dict(guest))
+                data['guests'].append(VmDisks._get_guest_dict(guest, bytes=bytes))
         
         return data
     
     def to_summary(self):
-
         filename: str = getattr(self.device.backing, 'fileName', None)
         if filename:
             identifier = filename
@@ -900,9 +1009,6 @@ def list_vm_nics(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pat
     """
     nics_per_vm_headers = [
         'vm',
-        'power_state',
-        'os_family',
-        'os_version',
         'device_networks',
         'guest_networks',
         'with_mappings',
@@ -914,15 +1020,13 @@ def list_vm_nics(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pat
 
     nics_headers = [
         'vm',
-        'power_state',
-        'os_family',
-        'os_version',
         'backing',
         'network',
         'address_type',
         'key',
         'mac',
-        'guests_ips',
+        'guests_ipv4',
+        'guests_ipv6',
         'guests_network_name',
     ]
     
@@ -938,86 +1042,91 @@ def list_vm_nics(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pat
 
                 info = extract_nics(vm, vcenter=vcenter)
 
-                extra_config = dictify_value(vm.config.extraConfig)
-                os_family = get_os_family(extra_config, vm.config.guestFullName)
-                os_version = get_os_version(extra_config)
-
                 mapped_guests: list[vim.vm.GuestInfo.NicInfo] = []
-                for nic in info.nics:
-                    for guest in nic.guests:
-                        mapped_guests.append(guest)
+                if info is not None:
+                    for nic in info.nics:
+                        for guest in nic.guests:
+                            mapped_guests.append(guest)
 
                 t_nics_per_vm.append([
                     vm.name, # vm
-                    vm.runtime.powerState, # power_state
-                    os_family,
-                    os_version,
-                    len(info.nics), # 'device_networks',
-                    len(mapped_guests) + len(info.unmapped_guests), # 'guest_networks',
-                    len(mapped_guests), # 'with_mappings',
-                    len(info.unmapped_guests), # 'without_mappings',
-                    [guest.macAddress for guest in mapped_guests], # 'mapped_guest',
-                    [guest.macAddress for guest in info.unmapped_guests], # 'unmapped_guests',
-                    info.issues,
+                    len(info.nics) if info is not None else None, # 'device_networks',
+                    len(mapped_guests) + len(info.unmapped_guests) if info is not None else None, # 'guest_networks',
+                    len(mapped_guests) if info is not None else None, # 'with_mappings',
+                    len(info.unmapped_guests) if info is not None else None, # 'without_mappings',
+                    [guest.macAddress for guest in mapped_guests] if info is not None else None, # 'mapped_guest',
+                    [guest.macAddress for guest in info.unmapped_guests] if info is not None else None, # 'unmapped_guests',
+                    info.issues if info is not None else None,
                 ])
 
-                for nic in info.nics:
-                    backing_typename = type(nic.device.backing).__name__
-                    if backing_typename.startswith('vim.vm.device.VirtualEthernetCard.'):
-                        backing_typename = backing_typename[len('vim.vm.device.VirtualEthernetCard.'):]
+                if info is not None:
+                    for nic in info.nics:
+                        backing_typename = type(nic.device.backing).__name__
+                        if backing_typename.startswith('vim.vm.device.VirtualEthernetCard.'):
+                            backing_typename = backing_typename[len('vim.vm.device.VirtualEthernetCard.'):]
 
-                    if isinstance(nic.device.backing, vim.vm.device.VirtualEthernetCard.DistributedVirtualPortBackingInfo):
-                        connection_obj = nic.device.backing.port
-                        network_obj = vcenter.get_portgroup_by_key(connection_obj.portgroupKey)
-                        if network_obj:
+                        if isinstance(nic.device.backing, vim.vm.device.VirtualEthernetCard.DistributedVirtualPortBackingInfo):
+                            connection_obj = nic.device.backing.port
+                            network_obj = vcenter.get_portgroup_by_key(connection_obj.portgroupKey)
+                            if network_obj:
+                                network = network_obj.name
+                            else:
+                                switch_obj = vcenter.get_switch_by_uuid(connection_obj.switchUuid)
+                                if switch_obj:
+                                    network = f"Switch {switch_obj.name} (port {connection_obj.portKey})"
+                                else:
+                                    network = f"Switch {connection_obj.switchUuid} (port {connection_obj.portKey})"
+                        elif isinstance(nic.device.backing, vim.vm.device.VirtualEthernetCard.NetworkBackingInfo):
+                            network_obj = nic.device.backing.network
                             network = network_obj.name
                         else:
-                            switch_obj = vcenter.get_switch_by_uuid(connection_obj.switchUuid)
-                            if switch_obj:
-                                network = f"Switch {switch_obj.name} (port {connection_obj.portKey})"
-                            else:
-                                network = f"Switch {connection_obj.switchUuid} (port {connection_obj.portKey})"
-                    elif isinstance(nic.device.backing, vim.vm.device.VirtualEthernetCard.NetworkBackingInfo):
-                        network_obj = nic.device.backing.network
-                        network = network_obj.name
-                    else:
-                        network = None
+                            network = None
 
-                    ip_addresses = []
-                    networks = []
-                    for guest in nic.guests:
+                        ipv4 = []
+                        ipv6 = []
+                        networks = []
+                        for guest in nic.guests:
+                            for ip in guest.ipAddress:
+                                ip = ip_address(ip)
+                                if ip.version == 4:
+                                    ipv4.append(ip)
+                                else:
+                                    ipv6.append(ip)
+                            networks.append(guest.network)
+                        
+                        t_nics.append([
+                            vm.name, # vm
+                            backing_typename, # backing
+                            network,
+                            nic.device.addressType, # address_type
+                            nic.device.key, # key
+                            nic.device.macAddress.lower(), # mac
+                            ipv4,
+                            ipv6,
+                            networks,
+                        ])
+
+                    for guest in info.unmapped_guests:
+                        ipv4 = []
+                        ipv6 = []
                         for ip in guest.ipAddress:
-                            ip_addresses.append(ip)
-                        networks.append(guest.network)
-                    
-                    t_nics.append([
-                        vm.name, # vm
-                        vm.runtime.powerState, # power_state
-                        os_family,
-                        os_version,
-                        backing_typename, # backing
-                        network,
-                        nic.device.addressType, # address_type
-                        nic.device.key, # key
-                        nic.device.macAddress.lower(), # mac
-                        ip_addresses,
-                        networks,
-                    ])
+                            ip = ip_address(ip)
+                            if ip.version == 4:
+                                ipv4.append(ip)
+                            else:
+                                ipv6.append(ip)
 
-                for guest in info.unmapped_guests:
-                    t_nics.append([
-                        vm.name, # vm
-                        vm.runtime.powerState, # power_state
-                        os_family,
-                        os_version,
-                        None, # backing
-                        None, # network
-                        None, # address_type
-                        guest.deviceConfigId, # key
-                        guest.macAddress.lower(), # mac
-                        guest.ipAddress,
-                        guest.network,
-                    ])
+                        t_nics.append([
+                            vm.name, # vm
+                            None, # backing
+                            None, # network
+                            None, # address_type
+                            guest.deviceConfigId, # key
+                            guest.macAddress.lower(), # mac
+                            ipv4,
+                            ipv6,
+                            guest.network,
+                        ])
 
             except Exception as err:
                 logger.exception(f"Error while analyzing {str(vm)} nics: {err}")
@@ -1034,6 +1143,10 @@ list_vm_nics.add_arguments = _add_arguments
 
 
 def extract_nics(vm: vim.VirtualMachine, *, vcenter: VCenterClient):
+    if vm.config is None:
+        # VM is not yet configured
+        return None
+    
     info = VmNics(vm)
 
     # Retrieve nic devices
@@ -1243,7 +1356,9 @@ class VmNic:
 
 
 def get_tools_version_number(toolsversion: str):
-    if re.match(r'^\d+$', toolsversion):
+    if toolsversion is None:
+        return None
+    elif re.match(r'^\d+$', toolsversion):
         toolsversion = int(toolsversion)
         if toolsversion == 0 or toolsversion == 2147483647:
             return None

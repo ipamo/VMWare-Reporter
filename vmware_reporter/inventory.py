@@ -12,7 +12,7 @@ from io import IOBase
 
 from pyVmomi import vim
 
-from . import VCenterClient, get_obj_ref
+from . import VCenterClient, get_obj_name, get_obj_ref
 
 _logger = logging.getLogger(__name__)
 
@@ -77,7 +77,7 @@ def build_folder_inventory(vcenter: VCenterClient, parent = None) -> InventoryNo
 
     def recurse_tree(obj: vim.ManagedEntity, parent: InventoryNode):
         ref = get_obj_ref(obj)
-        name = obj.name
+        name = get_obj_name(obj)
         found_by_ref[ref] = obj
         node = InventoryNode(name, nature=type(obj), ref=ref, parent=parent)
 
@@ -122,8 +122,8 @@ def build_folder_inventory(vcenter: VCenterClient, parent = None) -> InventoryNo
                 if not additional_node:
                     additional_node = InventoryNode('(found in container view but not in folder tree)', parent=node)
             
-                name = obj.name
-                InventoryNode(name, nature=type(obj), ref=ref, child_of=f'{obj.parent.name} ({get_obj_ref(obj.parent)})', parent=additional_node)
+                name = get_obj_name(obj)
+                InventoryNode(name, nature=type(obj), ref=ref, child_of=f'{get_obj_name(obj.parent)} ({get_obj_ref(obj.parent)})', parent=additional_node)
     finally:
         if view:
             view.Destroy()
@@ -137,8 +137,8 @@ def build_folder_inventory(vcenter: VCenterClient, parent = None) -> InventoryNo
         if not additional_node:
             additional_node = InventoryNode('(found in folder tree but not in container view)', parent=node)
     
-        name = obj.name
-        InventoryNode(name, nature=type(obj), ref=ref, child_of=f'{obj.parent.name} ({get_obj_ref(obj.parent)})', parent=additional_node)
+        name = get_obj_name(obj)
+        InventoryNode(name, nature=type(obj), ref=ref, child_of=f'{get_obj_name(obj.parent)} ({get_obj_ref(obj.parent)})', parent=additional_node)
 
     return node
 
@@ -211,6 +211,10 @@ class InventoryNode:
         return result
 
     def to_yaml(self, file, depth = 0):
+        if not isinstance(file, IOBase):
+            if dir := os.path.dirname(file):
+                os.makedirs(dir, exist_ok=True)
+                
         with nullcontext(file) if isinstance(file, IOBase) else open(file, 'w', encoding='utf-8') as fp:
             print(f"{' ' * self.indent_size * depth + '- ' if depth > 0 else ''}{self}:", file=fp)
             for child in self.children:

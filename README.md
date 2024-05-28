@@ -12,6 +12,11 @@ VMWare-reporter package is published [on PyPI](https://pypi.org/project/vmware-r
 pip install vmware-reporter
 ```
 
+Optionaly, use specifier `[excel]` to also install dependencies for reading and writing Excel files:
+
+```sh
+pip install vmware-reporter[excel]
+```
 
 ## Configuration
 

@@ -10,7 +10,7 @@ import sys
 from argparse import ArgumentParser
 from io import IOBase
 
-from . import VCenterClient, get_obj_ref, dump_obj
+from . import VCenterClient, get_obj_name, get_obj_ref, get_obj_typename, dump_obj
 
 _logger = logging.getLogger(__name__)
 
@@ -38,13 +38,13 @@ def dump(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern = N
             if type(obj) in first_types:
                 continue
 
-        name = obj.name
+        name = get_obj_name(obj)
         ref = get_obj_ref(obj)
         
         if isinstance(out, IOBase):
             obj_out = out
         else:
-            obj_out = os.path.join(vcenter.get_out_dir(), str(out).format(type=type(obj).__name__, name=name, ref=ref, env=vcenter.env))
+            obj_out = os.path.join(vcenter.get_out_dir(), str(out).format(type=get_obj_typename(obj), name=name, ref=ref, env=vcenter.env))
             obj_out_dir = os.path.dirname(obj_out)
             if obj_out_dir:
                 os.makedirs(obj_out_dir, exist_ok=True)
@@ -58,8 +58,8 @@ def _add_arguments(parser: ArgumentParser):
     parser.add_argument('search', nargs='*', help="Search term(s).")
     parser.add_argument('-n', '--normalize', action='store_true', help="Normalise search term(s).")
     parser.add_argument('-k', '--key', choices=['name', 'ref'], default='name', help="Search key (default: %(default)s).")
-    parser.add_argument('-t', '--type', dest='types', metavar='type', help="Managed object type name (example: datastore).")
     parser.add_argument('--first', action='store_true', help="Only handle the first object found for each type.")
+    parser.add_argument('-t', '--type', dest='types', metavar='type', help="Managed object type name (example: datastore).")
     parser.add_argument('-o', '--out', default=_DEFAULT_OUT, help="Output JSON file (default: %(default)s).")
 
 dump.add_arguments = _add_arguments

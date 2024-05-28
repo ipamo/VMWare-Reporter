@@ -15,13 +15,17 @@ from zut import (OutTable, add_func_command, add_module_command,
                  configure_logging, exec_command, get_help_text,
                  register_locale)
 
-from . import VCenterClient, __prog__, __version__, customfield, autoreport
+from . import VCenterClient, __prog__, __version__, autoreport, customvalue
+from .cluster import add_cluster_commands
+from .resourcepool import add_resourcepool_commands
 from .datastore import add_datastore_commands
 from .dump import dump
 from .host import add_host_commands
 from .inventory import export_inventory
 from .net import add_net_commands
+from .tag import add_tag_commands
 from .vm import add_vm_commands
+from .perf import add_perf_commands
 
 logger = logging.getLogger(__name__)
 
@@ -55,11 +59,16 @@ def add_commands(subparsers: _SubParsersAction[ArgumentParser]):
     add_func_command(subparsers, export_inventory, name='inventory')
     add_func_command(subparsers, dump, name='dump')
 
+    add_cluster_commands(subparsers, name='cluster')
+    add_resourcepool_commands(subparsers, name='resourcepool')
     add_datastore_commands(subparsers, name='datastore')
     add_net_commands(subparsers, name='net')
     add_host_commands(subparsers, name='host')
     add_vm_commands(subparsers, name='vm')
-    add_func_command(subparsers, customfield.list_customfields, name='customfield')
+    add_func_command(subparsers, customvalue.list_custom_values, name='customvalue')
+    add_tag_commands(subparsers, name='tag')
+    
+    add_perf_commands(subparsers, name='perf')
 
     add_module_command(subparsers, autoreport)
         

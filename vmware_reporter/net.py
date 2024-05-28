@@ -9,7 +9,7 @@ from argparse import ArgumentParser, RawTextHelpFormatter, _SubParsersAction
 from pyVmomi import vim
 from zut import add_func_command, out_table, get_help_text, get_description_text
 
-from . import VCenterClient, get_obj_ref
+from . import VCenterClient, get_obj_ref, get_obj_typename
 
 
 def add_net_commands(commands_subparsers: _SubParsersAction[ArgumentParser], *, name: str):
@@ -79,7 +79,7 @@ def list_nets(vcenter: VCenterClient, *, out: str = _DEFAULT_OUT):
                 vlan = None
                 ports = None
             elif isinstance(obj, vim.Network):
-                typename = type(obj).__name__
+                typename = get_obj_typename(obj)
                 switch = None
                 vlan = None
                 ports = None

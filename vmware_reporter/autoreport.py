@@ -6,11 +6,15 @@ from zut import files
 from zut.excel import is_excel_path, split_excel_path
 
 from . import VCenterClient
-from .customfield import list_customfields
+from .cluster import list_clusters
+from .customvalue import list_custom_values
 from .datastore import list_datastores, list_datastore_stats
 from .host import list_hosts
 from .net import list_nets
+from .resourcepool import list_resourcepool
 from .vm import list_vms, list_vm_disks, list_vm_nics
+from .tag import list_categories, list_tags
+from .perf import list_perf_counters, list_perf_intervals, list_perf_metrics
 from .settings import CONFIG, CONFIG_SECTION
 
 _DEFAULT_OUT = CONFIG.get(CONFIG_SECTION, 'autoreport_out', fallback='autoreport.xlsx#{title}')
@@ -31,7 +35,14 @@ def handle(vcenter: VCenterClient, out: os.PathLike|IOBase = _DEFAULT_OUT):
     list_nets(vcenter, out=out)
     list_datastores(vcenter, out=out)
     list_datastore_stats(vcenter, out=out)
-    list_customfields(vcenter, out=out)
+    list_clusters(vcenter, out=out)
+    list_resourcepool(vcenter, out=out)
+    list_perf_intervals(vcenter, out=out)
+    list_perf_counters(vcenter, out=out)
+    list_perf_metrics(vcenter, first=True, out=out)
+    list_categories(vcenter, out=out)
+    list_tags(vcenter, out=out)
+    list_custom_values(vcenter, out=out)
     
 def _add_arguments(parser: ArgumentParser):
     parser.add_argument('-o', '--out', default=_DEFAULT_OUT, help="Output tables (default: %(default)s).")
