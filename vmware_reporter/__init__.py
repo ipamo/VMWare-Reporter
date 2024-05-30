@@ -119,7 +119,7 @@ class VCenterClient:
 
 
     def connect(self):
-        addrs = resolve_host(self.host, timeout=2.0)
+        addrs = resolve_host(self.host, timeout=5.0)
         if not addrs:
             raise ValueError(f"Cannot resolve host name \"{self.host}\"")
         
