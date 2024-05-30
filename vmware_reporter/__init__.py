@@ -27,6 +27,7 @@ from pyVmomi.VmomiSupport import _managedDefMap
 from zut import (ExtendedJSONEncoder, Filters, MessageError,
                  iter_dicts_from_csv, resolve_host, configure_smb_credentials)
 from zut.excel import ExcelWorkbook, is_excel_path, split_excel_path
+from zut.files import smbclient
 
 from .settings import CONFIG, CONFIG_SECTION
 
@@ -68,10 +69,11 @@ class VCenterClient:
             section = CONFIG_SECTION
 
         if type(self)._first_instanciation:
-            smb_user = config.get(section, 'smb_user', fallback=None)
-            smb_password = config.get(section, 'smb_password', fallback=None)
-            if smb_user and smb_password:
-                configure_smb_credentials(smb_user, smb_password)
+            if smbclient:
+                smb_user = config.get(section, 'smb_user', fallback=None)
+                smb_password = config.get(section, 'smb_password', fallback=None)
+                if smb_user and smb_password:
+                    configure_smb_credentials(smb_user, smb_password)
             type(self)._first_instanciation = False
         
         if not env:
