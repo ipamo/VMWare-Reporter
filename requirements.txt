@@ -1,3 +1,3 @@
-zut[commons] >= 0.9.4
+zut @ git+https://github.com/ipamo/zut # TODO: zut[commons] >= 0.9.5
 pyvmomi
 requests

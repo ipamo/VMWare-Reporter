@@ -76,7 +76,7 @@ vmware-reporter inventory
 vmware-reporter dump
 ```
 
-- Reconfigure VMs (mass operation): copy template [vms_reconfigure.xlsx](https://ipamo.net/vmware-reporter/latest/_static/templates/vms_reconfigure.xlsx) to `data/vms_reconfigure.xlsx`, fill-in this file, then:
+- Reconfigure VMs (mass operation): copy template [vm_reconfigure.xlsx](https://ipamo.net/vmware-reporter/latest/_static/templates/vm_reconfigure.xlsx) to `data/vm_reconfigure.xlsx`, fill-in this file, then:
 
 ```sh
 vmware-reporter vm reconfigure

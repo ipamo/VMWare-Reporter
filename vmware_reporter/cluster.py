@@ -1,85 +1,242 @@
 """
-Analyze clusters (compute resources).
+Analyze clusters and domains (compute resources).
 """
 from __future__ import annotations
 
+from datetime import datetime
 import logging
 import os
 import re
-from argparse import ArgumentParser, RawTextHelpFormatter, _SubParsersAction
+from argparse import ArgumentParser
 from io import IOBase
+from time import sleep, time_ns
 
 from pyVmomi import vim
-from zut import (Header, add_func_command, get_description_text, get_help_text,
-                 out_table)
+from tabulate import tabulate
+from zut import Header, out_table, add_func_command, write_live
 
-from . import VCenterClient, get_obj_ref, get_obj_typename, dictify_obj
+from . import VCenterClient, dictify_obj, get_obj_name, get_obj_ref, get_obj_typename
+from .settings import OUT
 
 _logger = logging.getLogger(__name__)
 
 
-def add_cluster_commands(commands_subparsers: _SubParsersAction[ArgumentParser], *, name: str):
-    parser = commands_subparsers.add_parser(name, help=get_help_text(__doc__), description=get_description_text(__doc__), formatter_class=RawTextHelpFormatter, add_help=False)
+def handle(vcenter: VCenterClient, **kwargs):
+    return cluster_list(vcenter, **kwargs)
 
-    group = parser.add_argument_group(title='Command options')
-    group.add_argument('-h', '--help', action='help', help=f"Show this command help message and exit.")
+def _handle_add_arguments(parser: ArgumentParser, for_default_command = False):
+    if for_default_command:
+        parser.add_argument('search', nargs='*', help="Search term(s).")
+    parser.add_argument('-n', '--normalize', action='store_true', help="Normalise search term(s).")
+    parser.add_argument('-k', '--key', choices=['name', 'ref'], default='name', help="Search key (default: %(default)s).")
+    parser.add_argument('-o', '--out', default=OUT, help="Output table (default: %(default)s).")
 
-    subparsers = parser.add_subparsers(title='Sub commands')
-    add_func_command(subparsers, list_clusters, name='list')
+    if for_default_command:
+        return
+        
+    subparsers = parser.add_subparsers(title='sub commands')
+    add_func_command(subparsers, cluster_list, name='list')
+    add_func_command(subparsers, cluster_stat, name='stat')
+
+handle.add_arguments = _handle_add_arguments
 
 
-_DEFAULT_OUT = '{title}.csv'
-
-
-def list_clusters(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern = None, *, normalize: bool = False, key: str = 'name', out: os.PathLike|IOBase = _DEFAULT_OUT):
+def cluster_list(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern = None, *, normalize: bool = False, key: str = 'name', out: os.PathLike|IOBase = OUT):
     headers = [
         'name',
         'ref',
         'overall_status',
         'config_status',
-        'type',
         'host_count',
-        'host_effective',
+        'host_effective_count',
+        'cpu_cores',
+        'cpu_mhz',
+        'cpu_effective_mhz',
+        'mem_mib',
+        'mem_effective_mib',
+        # Perf
+        'perf_realtime_refresh_rate',
+        # Usage, see: https://vdc-repo.vmware.com/vmwb-repository/dcr-public/dce91b06-cc93-42d6-b277-78fb13a16d6e/7d3494a5-bca7-400f-a18f-f539787ec798/vim.cluster.UsageSummary.html
         'vm_count',
-        'vm_poweredoff',
-        'total_cpu_cores',
-        'total_cpu_mhz',
-        'effective_cpu_mhz',
-        Header('total_memory', fmt='gib'),
-        Header('effective_memory', fmt='gib'),
+        'vm_poweredoff_count',
+        'cpu_demand_mhz', # Sum of CPU demand of all the powered-on VMs in the cluster (= The amount of CPU resources a virtual machine would use if there were no CPU contention or CPU limit).
+        'cpu_entitled_mhz', # Current CPU entitlement across the cluster (= CPU resources devoted by the ESXi scheduler to the virtual machines and resource pools).
+        'cpu_reservation_mhz', # Sum of CPU reservation of all the Resource Pools and powered-on VMs in the cluster.
+        'cpu_poweredoff_reservation_mhz', # Sum of CPU reservation of all the powered-off VMs in the cluster.
+        'mem_demand_mib', # Sum of memory demand of all the powered-on VMs in the cluster.
+        'mem_entitled_mib', # Current memory entitlement across the cluster (= Amount of host physical memory the VM is entitled to, as determined by the ESXi scheduler).
+        'mem_reservation_mib', # Sum of memory reservation of all the Resource Pools and powered-on VMs in the cluster.
+        'mem_poweredoff_reservation_mib', # Sum of memory reservation of all the powered-off VMs in the cluster.
     ]
 
-    with out_table(out, title='clusters', dir=vcenter.out_dir, env=vcenter.env, headers=headers) as t:
-        for obj in vcenter.iter_objs(vim.ComputeResource, search, normalize=normalize, key=key):            
-            try:
-                _logger.info(f"Analyze cluster {obj.name}")
+    objs = vcenter.get_objs(vim.ComputeResource, search, normalize=normalize, key=key)
+    objs_count = len(objs)
 
-                usage = dictify_obj(obj.summary.usageSummary) if isinstance(obj, vim.ClusterComputeResource) else {}
+    perf_manager = vcenter.service_content.perfManager
+
+    with out_table(out, title='cluster', dir=vcenter.out_dir, env=vcenter.env, headers=headers) as t:
+        for i, obj in enumerate(objs):
+            name = get_obj_name(obj)
+            ref = get_obj_ref(obj)
+            
+            try:
+                _logger.info(f"Analyze cluster {i+1:,}/{objs_count:,} ({100 * (i+1)/objs_count:.0f}%): {name} ({ref})")
+
+                summary = obj.summary
+                usage: vim.cluster.UsageSummary = summary.usageSummary if isinstance(obj, vim.ClusterComputeResource) else None
+
+                # Perf
+                perf_provider_summary = perf_manager.QueryProviderSummary(obj)
+                perf_realtime_refresh_rate = perf_provider_summary.refreshRate if perf_provider_summary.currentSupported else None
 
                 t.append([
-                    obj.name,
-                    get_obj_ref(obj),
+                    name,
+                    ref,
                     obj.overallStatus,
                     obj.configStatus,
-                    get_obj_typename(obj),
-                    obj.summary.numHosts,
-                    obj.summary.numEffectiveHosts,
-                    usage.get('totalVmCount'),
-                    usage.get('poweredOffVmCount'),
-                    obj.summary.numCpuCores,
-                    obj.summary.totalCpu,
-                    obj.summary.effectiveCpu,
-                    obj.summary.totalMemory,
-                    obj.summary.effectiveMemory*1024*1024,
+                    # Summary, see: https://vdc-download.vmware.com/vmwb-repository/dcr-public/3325c370-b58c-4799-99ff-58ae3baac1bd/45789cc5-aba1-48bc-a320-5e35142b50af/doc/vim.ComputeResource.Summary.html
+                    summary.numHosts,
+                    summary.numEffectiveHosts,
+                    summary.numCpuCores,
+                    summary.totalCpu,
+                    summary.effectiveCpu, # Effective = aggregated effective resource from all running hosts. Hosts that are in maintenance mode or are unresponsive are not counted. Resources used by the VMware Service Console are not included in the aggregate. This value represents the amount of resources available for the root resource pool for running virtual machines.
+                    int(summary.totalMemory / 1024**2),
+                    int(summary.effectiveMemory), # Effective = aggregated effective resource from all running hosts. Hosts that are in maintenance mode or are unresponsive are not counted. Resources used by the VMware Service Console are not included in the aggregate. This value represents the amount of resources available for the root resource pool for running virtual machines.                              
+                    # Perf
+                    perf_realtime_refresh_rate,
+                    # Usage, see: https://vdc-repo.vmware.com/vmwb-repository/dcr-public/dce91b06-cc93-42d6-b277-78fb13a16d6e/7d3494a5-bca7-400f-a18f-f539787ec798/vim.cluster.UsageSummary.html
+                    usage.totalVmCount if usage else None,
+                    usage.poweredOffVmCount if usage else None,
+                    usage.cpuDemandMhz,
+                    usage.cpuEntitledMhz,
+                    usage.cpuReservationMhz,
+                    usage.poweredOffCpuReservationMhz,
+                    usage.memDemandMB,
+                    usage.memEntitledMB,
+                    usage.memReservationMB,
+                    usage.poweredOffMemReservationMB,
                 ])
             
-            except Exception as err:
-                _logger.exception(f"Error while analyzing {str(obj)}")
+            except:
+                _logger.exception(f"Error while analyzing host {name} ({ref})")
+
+def _add_arguments(parser: ArgumentParser):
+    _handle_add_arguments(parser, for_default_command=True)
+
+cluster_list.add_arguments = _add_arguments
+
+
+def cluster_stat(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern = None, *, normalize: bool = False, key: str = 'name', no_pct: bool = False, resources: list[str] = None, sleep_duration: float = 1.0, **ignored):
+    print(resources)
+    objs = sorted(vcenter.get_objs(vim.ClusterComputeResource, search, normalize=normalize, key=key), key=lambda obj: obj.name)
+
+    previous_tabtext = None
+    last_change: datetime = None
+    headers = ['name']
+    if not no_pct and (not resources or 'cpu' in resources):
+        headers.append('cpu_demand_pct')
+    if not no_pct and (not resources or 'mem' in resources):
+        headers.append('mem_demand_pct')
+    if not resources or 'cpu' in resources:
+        headers.append('cpu_demand_mhz')
+        headers.append('cpu_entitled_mhz')
+        headers.append('cpu_effective_mhz')
+        headers.append('cpu_mhz')
+    if not resources or 'mem' in resources:
+        headers.append('mem_demand_mib')
+        headers.append('mem_entitled_mib')
+        headers.append('mem_effective_mib')
+        headers.append('mem_mib')
+
+    while True:
+        total_cpu_effective_mhz = 0
+        total_mem_effective_mib = 0
+        total_cpu_demand_mhz = 0
+        total_mem_demand_mib = 0
+        total_cpu_entitled_mhz = 0
+        total_mem_entitled_mib = 0
+        total_cpu_mhz = 0
+        total_mem_mib = 0
+        
+        data = []
+        now = datetime.now()
+        t0 = time_ns()
+        for obj in objs:
+            summary = obj.summary
+            usage: vim.cluster.UsageSummary = summary.usageSummary
+
+            cpu_effective_mhz = summary.effectiveCpu
+            mem_effective_mib = int(summary.effectiveMemory)
+            cpu_demand_mhz = usage.cpuDemandMhz
+            mem_demand_mib = usage.memDemandMB
+            cpu_entitled_mhz = usage.cpuEntitledMhz
+            mem_entitled_mib = usage.memEntitledMB
+            cpu_mhz = summary.totalCpu
+            mem_mib = int(summary.totalMemory / 1024**2)
+
+            total_cpu_effective_mhz += cpu_effective_mhz
+            total_mem_effective_mib += mem_effective_mib
+            total_cpu_demand_mhz += cpu_demand_mhz
+            total_mem_demand_mib += mem_demand_mib
+            total_cpu_entitled_mhz += cpu_entitled_mhz
+            total_mem_entitled_mib += mem_entitled_mib
+            total_cpu_mhz += cpu_mhz
+            total_mem_mib += mem_mib
+
+            row = [obj.name]
+            if not no_pct and (not resources or 'cpu' in resources):
+                row.append(round(100 * cpu_demand_mhz / cpu_effective_mhz, 1))
+            if not no_pct and (not resources or 'mem' in resources):
+                row.append(round(100 * mem_demand_mib / mem_effective_mib, 1))
+            if not resources or 'cpu' in resources:
+                row.append(cpu_demand_mhz)
+                row.append(cpu_entitled_mhz)
+                row.append(cpu_effective_mhz)
+                row.append(cpu_mhz)
+            if not resources or 'mem' in resources:
+                row.append(mem_demand_mib)
+                row.append(mem_entitled_mib)
+                row.append(mem_effective_mib)
+                row.append(mem_mib)
+            data.append(row)
+
+        row = ["(total)"]
+        if not no_pct and (not resources or 'cpu' in resources):
+            row.append(round(100 * total_cpu_demand_mhz / total_cpu_effective_mhz, 1))
+        if not no_pct and (not resources or 'mem' in resources):
+            row.append(round(100 * total_mem_demand_mib / total_mem_effective_mib, 1))
+        if not resources or 'cpu' in resources:
+            row.append(total_cpu_demand_mhz)
+            row.append(total_cpu_entitled_mhz)
+            row.append(total_cpu_effective_mhz)
+            row.append(total_cpu_mhz)
+        if not resources or 'mem' in resources:
+            row.append(total_mem_demand_mib)
+            row.append(total_mem_entitled_mib)
+            row.append(total_mem_effective_mib)
+            row.append(total_mem_mib)
+        data.append(row)
+        
+        duration_ms = (time_ns() - t0) / 10**6
+
+        tabtext = tabulate(data, headers, intfmt=',', floatfmt='.1f')
+        if previous_tabtext is not None and tabtext != previous_tabtext:
+            last_change = now
+        text = f"Updated: {now.strftime('%Y-%m-%d %H:%M:%S')} (duration: {duration_ms:,.0f} ms), last changed: {last_change.strftime('%Y-%m-%d %H:%M:%S') if last_change else '-'}\n"
+        text += tabtext
+        write_live(text)
+        previous_tabtext = tabtext
+        sleep(sleep_duration)
 
 def _add_arguments(parser: ArgumentParser):
     parser.add_argument('search', nargs='*', help="Search term(s).")
     parser.add_argument('-n', '--normalize', action='store_true', help="Normalise search term(s).")
     parser.add_argument('-k', '--key', choices=['name', 'ref'], default='name', help="Search key (default: %(default)s).")
-    parser.add_argument('-o', '--out', default=_DEFAULT_OUT, help="Output table (default: %(default)s).")
+    parser.add_argument('--sleep', type=float, default=1.0, dest='sleep_duration', help="Sleep duration (in seconds) between two invokations.")
+    parser.add_argument('--no-pct', action='store_true', help="Do not display percentages.")
 
-list_clusters.add_arguments = _add_arguments
+    group = parser.add_argument_group('resources')
+    group.add_argument('--cpu', action='append_const', const='cpu', dest='resources', help="CPU.")
+    group.add_argument('--mem', action='append_const', const='mem', dest='resources', help="Memory.")
+
+cluster_stat.add_arguments = _add_arguments

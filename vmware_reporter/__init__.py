@@ -3,6 +3,7 @@ Top-level API of vmware-reporter library.
 """
 from __future__ import annotations
 
+import atexit
 import json
 import logging
 import os
@@ -10,10 +11,9 @@ import re
 import urllib3
 import requests
 from collections.abc import Callable, Iterator
-from configparser import ConfigParser
+from configparser import ConfigParser, _UNSET
 from contextlib import nullcontext
 from datetime import date
-from inspect import signature
 from io import IOBase
 from pathlib import Path
 from types import (BuiltinFunctionType, BuiltinMethodType, FunctionType,
@@ -49,7 +49,15 @@ class VCenterClient:
     """
     Main entry point of the library to retrieve VMWare managed objects and interact with them. 
     """
-    _first_instanciation = True
+    _instances: dict[str,VCenterClient] = {}
+
+    @classmethod
+    def for_env(cls, env: str):
+        if vcenter := cls._instances.get(env):
+            return vcenter
+        else:
+            return VCenterClient(env)
+
 
     def __init__(self, env: str = None, *, host: str = None, user: str = None, password: str = None, no_ssl_verify: bool = None, out_dir: str|Path = None, config: ConfigParser = None, section: str = None):
         """
@@ -68,13 +76,17 @@ class VCenterClient:
         if not section:
             section = CONFIG_SECTION
 
-        if type(self)._first_instanciation:
+        if not self._instances:
             if smbclient:
                 smb_user = config.get(section, 'smb_user', fallback=None)
                 smb_password = config.get(section, 'smb_password', fallback=None)
                 if smb_user and smb_password:
                     configure_smb_credentials(smb_user, smb_password)
-            type(self)._first_instanciation = False
+                    
+            atexit.register(self._atexit)
+            self._instances[env] = self            
+        elif env in self._instances:
+            raise ValueError(f"VCenter already instanciated for env {env}")
         
         if not env:
             envs = VCenterClient.get_configured_envs(config=config, section=section)
@@ -95,17 +107,29 @@ class VCenterClient:
         if out_dir is None:
             out_dir = config.get(full_section, 'out_dir', fallback=None)
             if out_dir is None:
-                out_dir = config.get(section, 'out_dir', fallback=None)
-                if out_dir is None:
-                    out_dir = 'data' if env == 'default' else 'data/{env}'
-        self.out_dir = Path(str(out_dir).format(env=env))
+                out_dir = config.get(section, 'out_dir', fallback='data/{env}')
+        self.out_dir = Path(str(out_dir).format(env='' if env == 'default' else env))
         
         self.logger = logging.getLogger(f'{self.__class__.__module__}.{self.__class__.__qualname__}' + ('' if env == 'default' else f'.{self.env}'))
 
+        self._service_instance: vim.ServiceInstance = None
+        self._service_content: vim.ServiceInstanceContent = None
         self._rest_session = requests.Session()
+
+        # Cached objects
+        self._cookie: dict = None
+        self._datacenter: vim.Datacenter = None
+        self._objs_by_ref: dict[str,vim.ManagedEntity] = {}
+        self._portgroups_by_key: dict[str,vim.dvs.DistributedVirtualPortgroup] = None
+        self._switchs_by_uuid: dict[str,vim.dvs.DistributedVirtualPortgroup] = None        
+        self._perf_intervals_by_name: dict[str,vim.HistoricalInterval] = None
         self._categories: dict[UUID,Category] = None
         self._tags: dict[UUID,Tag] = None
 
+
+    def __str__(self):
+        return f'{type(self).__name__}:{self.env}'
+    
 
     #region Enter/connect and exit/close
 
@@ -124,39 +148,35 @@ class VCenterClient:
             raise ValueError(f"Cannot resolve host name \"{self.host}\"")
         
         addr = addrs[0]
-        self.logger.debug(f"Connect to {addr} ({self.host}) with user {self.user}")
-
+        self.logger.debug("Connect to %s vcenter (%s=%s, user: %s)", self.env, self.host, addr, self.user)
         self._service_instance = SmartConnect(host=self.host, user=self.user, pwd=self.password, disableSslCertValidation=self.no_ssl_verify)
 
 
     def close(self):
-        try:
+        if self._service_instance is not None:
+            self.logger.debug("Disconnect from %s vcenter (%s, user: %s)", self.env, self.host, self.user)
             Disconnect(self._service_instance)
-        except AttributeError:
-            pass
-
+            self._service_instance = None
         self._rest_disconnect()
     
 
+    @classmethod
+    def _atexit(cls):
+        for instance in cls._instances.values():
+            instance.close()
+
+
     @property
     def service_instance(self) -> vim.ServiceInstance:
-        try:
-            return self._service_instance
-        except AttributeError:
-            pass
-
-        self.connect()
+        if self._service_instance is None:
+            self.connect()
         return self._service_instance
 
 
     @property
     def service_content(self) -> vim.ServiceInstanceContent:
-        try:
-            return self._service_content
-        except AttributeError:
-            pass
-
-        self._service_content = self.service_instance.RetrieveContent()
+        if self._service_content is None:
+            self._service_content = self.service_instance.RetrieveContent()
         return self._service_content
     
     #endregion
@@ -166,18 +186,37 @@ class VCenterClient:
 
     @property
     def datacenter(self):
-        try:
-            return self._datacenter
-        except AttributeError:
-            pass
-
-        datacenters = self.get_objs(vim.Datacenter)
-        if not datacenters:
-            raise ValueError(f"Datacenter not found")
-        if len(datacenters) > 1:
-            raise ValueError(f"Several datacenter found")
-        self._datacenter = datacenters[0]
+        if self._datacenter is None:
+            datacenters = self.get_objs(vim.Datacenter)
+            if not datacenters:
+                raise ValueError(f"Datacenter not found")
+            if len(datacenters) > 1:
+                raise ValueError(f"Several datacenter found")
+            self._datacenter = datacenters[0]
         return self._datacenter
+    
+
+    def get_obj_by_ref(self, ref: str, default = _UNSET):
+        if obj := self._objs_by_ref.get(ref):
+            return obj
+        else:
+            m = re.match(r'^([^\-]+)\-[a-z]?\d+$', ref)
+            if not m:
+                raise ValueError(f"Invalid ref format: {ref}")
+            obj_type = OBJ_TYPES_BY_REFPREFIX.get(m[1])
+            if not obj_type:
+                raise ValueError(f"Unknown ref prefix: {m[1]}")
+            
+            try:
+                obj = self.get_obj(obj_type, ref, key='ref')
+            except KeyError:
+                if default is _UNSET:
+                    raise
+                else:
+                    return default
+
+            # added in cache ('_objs_by_ref') in method 'get_obj()' -> 'iter_objs()'
+            return obj
 
 
     def get_obj(self, type: type[T_Obj], search: list[str|re.Pattern]|str|re.Pattern|UUID, *, normalize: bool = False, key: Literal['name', 'ref', 'uuid', 'bios_uuid'] = 'name') -> T_Obj:
@@ -213,6 +252,7 @@ class VCenterClient:
                     raise ValueError(f"key '{key}' can be used only for virtual machines or host systems")
 
             if obj:
+                self._objs_by_ref[get_obj_ref(obj)] = obj
                 return obj
             else:
                 raise KeyError(f"Not found: {search} (type: {type.__name__})")
@@ -243,14 +283,17 @@ class VCenterClient:
 
 
     @overload
-    def get_objs(self, types: type[T_Obj], search: list[str|Path|re.Pattern]|str|Path|re.Pattern = None, *, normalize: bool = None, key: Literal['name', 'ref'] = 'name', sort_key: str|list[str]|Callable = None) -> list[T_Obj]:
+    def get_objs(self, types: type[T_Obj], search: list[str|Path|re.Pattern]|str|Path|re.Pattern = None, *, normalize: bool = None, key: Literal['name', 'ref'] = 'name', first: bool = False, sort_key: str|list[str]|Callable = None) -> list[T_Obj]:
         ...
 
-    def get_objs(self, types: list[type|str]|type|str = None, search: list[str|Path|re.Pattern]|str|Path|re.Pattern = None, *, normalize: bool = None, key: Literal['name', 'ref'] = 'name', sort_key: str|list[str]|Callable = None):        
+    def get_objs(self, types: list[type|str]|type|str = None, search: list[str|Path|re.Pattern]|str|Path|re.Pattern = None, *, normalize: bool = None, key: Literal['name', 'ref'] = 'name', first: bool = False, sort_key: str|list[str]|Callable = None):        
         """
         List VMWare managed objects matching the given search.
         """
-        objs = [obj for obj in self.iter_objs(types, search, normalize=normalize, key=key)]
+        objs = []
+
+        for obj in self.iter_objs(types, search, normalize=normalize, key=key, first=first):
+            objs.append(obj)
 
         if sort_key:
             if isinstance(sort_key, str):
@@ -267,10 +310,10 @@ class VCenterClient:
 
 
     @overload
-    def iter_objs(self, types: type[T_Obj], search: list[str|Path|re.Pattern]|str|Path|re.Pattern = None, *, normalize: bool = None, key: Literal['name', 'ref'] = 'name') -> Iterator[T_Obj]:
+    def iter_objs(self, types: type[T_Obj], search: list[str|Path|re.Pattern]|str|Path|re.Pattern = None, *, normalize: bool = None, key: Literal['name', 'ref'] = 'name', first: bool = False) -> Iterator[T_Obj]:
         ...
 
-    def iter_objs(self, types: list[type|str]|type|str = None, search: list[str|Path|re.Pattern]|str|Path|re.Pattern = None, *, normalize: bool = None, key: Literal['name', 'ref'] = 'name'):
+    def iter_objs(self, types: list[type|str]|type|str = None, search: list[str|Path|re.Pattern]|str|Path|re.Pattern = None, *, normalize: bool = None, key: Literal['name', 'ref'] = 'name', first: bool = False):
         """
         Iterate over VMWare managed objects matching the given search.
         """
@@ -286,15 +329,24 @@ class VCenterClient:
         elif isinstance(types, (str,type)):
             types = [types]
         
-        types = [self.parse_obj_type(_type) for _type in types]
+        types = [get_obj_type(_type) for _type in types]
 
         # Search using a container view
         view = None
         try:
             view = self.service_content.viewManager.CreateContainerView(self.service_content.rootFolder, types, recursive=True)
 
+            obj_types = set()
+
             for obj in view.view:
+                self._objs_by_ref[get_obj_ref(obj)] = obj
+                obj_type = type(obj)
+                if first and obj_type in obj_types:
+                    continue
+
                 if self._obj_matches(obj, key, filters):
+                    if first:
+                        obj_types.add(obj_type)
                     yield obj
         finally:
             if view:
@@ -326,24 +378,20 @@ class VCenterClient:
 
     @property
     def cookie(self) -> dict:
-        try:
-            return self._cookie
-        except AttributeError:
-            pass
-    
-        # Get the cookie built from the current session
-        client_cookie = self.service_instance._stub.cookie
+        if self._cookie is None:    
+            # Get the cookie built from the current session
+            client_cookie = self.service_instance._stub.cookie
 
-        # Break apart the cookie into it's component parts
-        cookie_name = client_cookie.split("=", 1)[0]
-        cookie_value = client_cookie.split("=", 1)[1].split(";", 1)[0]
-        cookie_path = client_cookie.split("=", 1)[1].split(";", 1)[1].split(
-            ";", 1)[0].lstrip()
-        cookie_text = " " + cookie_value + "; $" + cookie_path
+            # Break apart the cookie into it's component parts
+            cookie_name = client_cookie.split("=", 1)[0]
+            cookie_value = client_cookie.split("=", 1)[1].split(";", 1)[0]
+            cookie_path = client_cookie.split("=", 1)[1].split(";", 1)[1].split(
+                ";", 1)[0].lstrip()
+            cookie_text = " " + cookie_value + "; $" + cookie_path
 
-        # Make a cookie
-        self._cookie = dict()
-        self._cookie[cookie_name] = cookie_text
+            # Make a cookie
+            self._cookie = dict()
+            self._cookie[cookie_name] = cookie_text
         return self._cookie
 
 
@@ -449,104 +497,41 @@ class VCenterClient:
                     envs.append(env)
 
         return envs
-        
-    @classmethod
-    def parse_obj_type(cls, value: str|type|vim.ManagedEntity) -> type[vim.ManagedEntity]:
-        if not value:
-            raise ValueError(f"name cannot be blank")
-        
-        elif isinstance(value, type):
-            if not issubclass(value, vim.ManagedEntity):
-                raise TypeError(f"type {value} is not a subclass of vim.ManagedEntity")
-            
-            return value
-        
-        elif isinstance(value, vim.ManagedEntity):
-            return type(value)
-        
-        elif not isinstance(value, str):
-            raise TypeError(f"invalid type for name: {value}")
-        
-        else:
-            lower = value.lower()
-
-            # Search in types
-            if lower in cls.OBJ_TYPES:
-                return cls.OBJ_TYPES[lower]
-
-            # Handle aliases            
-            if lower == 'vm':
-                return vim.VirtualMachine
-            if lower == 'host':
-                return vim.HostSystem
-            if lower == 'net':
-                return vim.Network
-            if lower == 'dvs':
-                return vim.DistributedVirtualSwitch
-            if lower == 'dvp':
-                return vim.dvs.DistributedVirtualPortgroup
-            if lower == 'ds':
-                return vim.Datastore
-            if lower == 'dc':
-                return vim.Datacenter
-
-            raise KeyError(f"vim managed object type not found for name {value}")
-
-    def _build_obj_types() -> dict[str,type[vim.ManagedEntity]]:
-        types = {}
-
-        for key in _managedDefMap.keys():
-            if not key.startswith('vim.'):
-                continue
-
-            attr = key[len('vim.'):]
-            _type = getattr(vim, attr)
-            if not issubclass(_type, vim.ManagedEntity):
-                continue
-
-            lower = attr.lower()
-            if lower in types:
-                continue
-
-            types[lower] = _type
-
-        return types
-            
-    OBJ_TYPES = _build_obj_types()
     
     #endregion
 
 
-    #region Retrieve network objects by key
+    #region Retrieve specific cached objects
     
     def get_portgroup_by_key(self, key: str) -> vim.dvs.DistributedVirtualPortgroup:
         if key is None:
             return None
         
-        try:
-            by_key = self._portgroups_by_key
-        except AttributeError:
-            by_key = {}
+        if self._portgroups_by_key is None:
+            self._portgroups_by_key = {}
             for obj in self.iter_objs(vim.dvs.DistributedVirtualPortgroup):
-                by_key[obj.key] = obj
-            self._portgroups_by_key = by_key
+                self._portgroups_by_key[obj.key] = obj
 
-        return by_key.get(key)
+        return self._portgroups_by_key.get(key)
     
     def get_switch_by_uuid(self, uuid: str) -> vim.DistributedVirtualSwitch:
         if uuid is None:
             return None
         
-        try:
-            by_uuid = self._switchs_by_uuid
-        except AttributeError:
-            by_uuid = {}
+        if self._switchs_by_uuid is None:
+            self._switchs_by_uuid = {}
             for obj in self.iter_objs(vim.DistributedVirtualSwitch):
-                by_uuid[obj.uuid] = obj
-            self._switchs_by_uuid = by_uuid
+                self._switchs_by_uuid[obj.uuid] = obj
 
-        return by_uuid.get(uuid)
-
+        return self._switchs_by_uuid.get(uuid)
+    
+    @property
+    def perf_intervals_by_name(self):
+        if self._perf_intervals_by_name is None:
+            pm = self.service_content.perfManager
+            self._perf_intervals_by_name = {interval.name: interval for interval in pm.historicalInterval}
+        return self._perf_intervals_by_name
+    
     #endregion
 
 
@@ -628,6 +613,7 @@ class VCenterClient:
         return [self.get_tag_by_key(tag_id) for tag_id in tag_ids]
 
     #endregion
+
 
 
 class Category:
@@ -730,14 +716,66 @@ def _expand_search_from_files(search: list[str|Path|re.Pattern]|str|Path|re.Patt
     return result
 
 
-def get_obj_name(obj: vim.ManagedObject) -> str:
+OBJ_TYPES_BY_REFPREFIX = {
+    'datacenter':    vim.Datacenter,
+    'group':         vim.Folder,
+    'dvportgroup':   vim.dvs.DistributedVirtualPortgroup,
+    'dvs':           vim.dvs.VmwareDistributedVirtualSwitch,
+    'network':       vim.Network,
+    'datastore':     vim.Datastore,
+    'domain':        vim.ComputeResource,
+    'resgroup':      vim.ResourcePool,
+    'host':          vim.HostSystem,
+    'vm':            vim.VirtualMachine,
+}
+
+
+OBJ_TYPES = {
+    **OBJ_TYPES_BY_REFPREFIX,
+    # aliases
+    'cluster':       vim.ClusterComputeResource,  # ref_prefix is 'domain', followed by '-c'
+    'folder':        vim.Folder,
+    'pool':          vim.ResourcePool,
+}
+
+_key: str
+for _key in _managedDefMap.keys():
+    if not _key.startswith('vim.'):
+        continue
+
+    _attr = _key[len('vim.'):]
+    _type = getattr(vim, _attr)
+    if not issubclass(_type, vim.ManagedEntity):
+        continue
+
+    lower = _attr.lower()
+    if lower in OBJ_TYPES:
+        continue
+    OBJ_TYPES[lower] = _type
+
+
+_obj_names: dict[vim.ManagedObject, str] = {}
+
+def get_obj_name(obj: vim.ManagedObject, use_cache=False) -> str:
     if obj is None:
         return None
+
+    if use_cache:
+        name = _obj_names.get(obj)
+        if name is not None:
+            return name
     
-    if isinstance(obj, vim.ResourcePool) and obj.name == 'Resources' and obj.parent:
-        return f"{obj.parent.name}/{obj.name}"
-    else:
-        return obj.name
+    try:
+        if isinstance(obj, vim.ResourcePool) and obj.name == 'Resources' and obj.parent:
+            name = f"{obj.parent.name}/{obj.name}"
+        else:
+            name = obj.name
+    except Exception as err:
+        _logger.exception(f"Cannot get name of {get_obj_ref(obj)}")
+        name = f'!{type(err.__name__)}({get_obj_ref(obj)})'
+
+    _obj_names[obj] = name
+    return name
 
 
 def get_obj_ref(obj: vim.ManagedObject) -> str:
@@ -761,7 +799,7 @@ def get_obj_ref(obj: vim.ManagedObject) -> str:
 
 
 def get_obj_path(obj: vim.ManagedEntity, full: bool = False) -> str:
-    """ Return the path of the given vim managed entity. """
+    """ Return the path of the given managed entity. """
     if obj is None:
         return None
     
@@ -781,11 +819,53 @@ def get_obj_path(obj: vim.ManagedEntity, full: bool = False) -> str:
         return get_obj_path(obj.parent, full=full) + "/" + obj.name
 
 
-def get_obj_typename(obj: vim.ManagedObject) -> str:
-    if obj is None:
+def get_obj_type(value: str|type|vim.ManagedEntity) -> type[vim.ManagedEntity]:
+    if not value:
         return None
     
-    return type(obj).__name__.split('.')[-1]
+    elif isinstance(value, type):
+        if not issubclass(value, vim.ManagedEntity):
+            raise TypeError(f"Type {value} is not a subclass of vim.ManagedEntity")
+        
+        return value
+    
+    elif isinstance(value, vim.ManagedEntity):
+        return type(value)
+    
+    elif not isinstance(value, str):
+        raise TypeError(f"Invalid type for {value}")
+    
+    else:
+        lower = value.lower()
+
+        # Search in types
+        if lower in OBJ_TYPES:
+            return OBJ_TYPES[lower]
+
+        raise KeyError(f"Managed object type not found for {value}")
+
+
+def get_obj_typename(obj_or_type: type[vim.ManagedObject]|vim.ManagedObject) -> str:
+    if not obj_or_type:
+        return None
+    
+    if not isinstance(obj_or_type, type):
+        obj_or_type = type(obj_or_type)
+    
+    return obj_or_type.__name__.split('.')[-1]
+
+
+def get_obj_refprefix(obj_or_type: type[vim.ManagedEntity]|vim.ManagedEntity):
+    if not obj_or_type:
+        return None
+    
+    if not isinstance(obj_or_type, type):
+        obj_or_type = type(obj_or_type)
+
+    for refprefix, _type in OBJ_TYPES_BY_REFPREFIX.items():
+        if issubclass(obj_or_type, _type):
+            return refprefix
+    raise ValueError(f"Ref prefix not found for type: {obj_or_type.__name__}")
 
 
 def identify_obj(obj: vim.ManagedObject) -> dict:
@@ -1028,5 +1108,6 @@ def dump_obj(obj: vim.ManagedObject, obj_out: os.PathLike|IOBase, *, title: str 
 __all__ = (
     '__prog__', '__version__', '__version_tuple__',
     'VCenterClient', 'Category', 'Tag',
-    'get_obj_name', 'get_obj_ref', 'get_obj_path', 'get_obj_typename', 'identify_obj', 'dictify_value', 'dictify_obj', 'dump_obj',
+    'OBJ_TYPES_BY_REFPREFIX', 'OBJ_TYPES',
+    'get_obj_name', 'get_obj_ref', 'get_obj_path', 'get_obj_type', 'get_obj_typename', 'get_obj_refprefix', 'identify_obj', 'dictify_value', 'dictify_obj', 'dump_obj',
 )

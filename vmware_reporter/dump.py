@@ -11,13 +11,12 @@ from argparse import ArgumentParser
 from io import IOBase
 
 from . import VCenterClient, get_obj_name, get_obj_ref, get_obj_typename, dump_obj
+from .settings import DUMP_OUT
 
 _logger = logging.getLogger(__name__)
 
-_DEFAULT_OUT = os.path.join("dumps", "{type}", "{name} ({ref}).json")
 
-
-def dump(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern = None, *, normalize: bool = False, key: str = 'name', first: bool = False, types: list[type|str]|type|str = None, out: os.PathLike|IOBase = _DEFAULT_OUT):
+def dump(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern = None, *, normalize: bool = False, key: str = 'name', first: bool = False, types: list[type|str]|type|str = None, out: os.PathLike|IOBase = DUMP_OUT):
     """
     Export all available data about VMWare managed objects to JSON files.
     """
@@ -29,7 +28,7 @@ def dump(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern = N
         if not isinstance(out, str):
             out = str(out)
         if not '{name}' in out and not '{ref}' in out:
-            raise ValueError("out must contain {name} or {ref} placeholder")
+            raise ValueError("out must contain at least {name} or {ref} placeholder")
 
     first_types = []
 
@@ -44,7 +43,7 @@ def dump(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern = N
         if isinstance(out, IOBase):
             obj_out = out
         else:
-            obj_out = os.path.join(vcenter.out_dir, str(out).format(type=get_obj_typename(obj), name=name, ref=ref, env=vcenter.env))
+            obj_out = os.path.join(vcenter.out_dir, str(out).format(typename=get_obj_typename(obj), name=name, ref=ref, env=vcenter.env))
             obj_out_dir = os.path.dirname(obj_out)
             if obj_out_dir:
                 os.makedirs(obj_out_dir, exist_ok=True)
@@ -60,6 +59,6 @@ def _add_arguments(parser: ArgumentParser):
     parser.add_argument('-k', '--key', choices=['name', 'ref'], default='name', help="Search key (default: %(default)s).")
     parser.add_argument('--first', action='store_true', help="Only handle the first object found for each type.")
     parser.add_argument('-t', '--type', dest='types', metavar='type', help="Managed object type name (example: datastore).")
-    parser.add_argument('-o', '--out', default=_DEFAULT_OUT, help="Output JSON file (default: %(default)s).")
+    parser.add_argument('-o', '--out', default=DUMP_OUT, help="Output JSON file (default: %(default)s).")
 
 dump.add_arguments = _add_arguments

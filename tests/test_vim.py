@@ -1,8 +1,8 @@
 from unittest import TestCase
 from pyVmomi import vim
-from vmware_reporter import VCenterClient
+from vmware_reporter import VCenterClient, OBJ_TYPES
 
 class Case(TestCase):
     def test_types(self):
-        self.assertIn('virtualmachine', VCenterClient.OBJ_TYPES.keys())
-        self.assertEqual(VCenterClient.OBJ_TYPES['virtualmachine'], vim.VirtualMachine)
+        self.assertIn('virtualmachine', OBJ_TYPES.keys())
+        self.assertEqual(OBJ_TYPES['virtualmachine'], vim.VirtualMachine)

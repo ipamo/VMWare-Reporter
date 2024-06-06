@@ -10,6 +10,7 @@ from pyVmomi import vim
 from zut import add_func_command, out_table, get_help_text, get_description_text
 
 from . import VCenterClient, get_obj_ref, get_obj_typename
+from .settings import OUT
 
 
 def add_net_commands(commands_subparsers: _SubParsersAction[ArgumentParser], *, name: str):
@@ -22,9 +23,7 @@ def add_net_commands(commands_subparsers: _SubParsersAction[ArgumentParser], *, 
     add_func_command(subparsers, list_nets, name='list')
 
 
-_DEFAULT_OUT = '{title}.csv'
-
-def list_nets(vcenter: VCenterClient, *, out: str = _DEFAULT_OUT):
+def list_nets(vcenter: VCenterClient, *, out: str = OUT):
     """
     List switchs (`vim.dvs.DistributedVirtualSwitch` objects) and networks (`vim.Network` and `vim.dvs.DistributedVirtualPortgroup` objects).
     """
@@ -97,7 +96,7 @@ def list_nets(vcenter: VCenterClient, *, out: str = _DEFAULT_OUT):
 
 
 def _add_arguments(parser: ArgumentParser):
-    parser.add_argument('-o', '--out', default=_DEFAULT_OUT, help="Output Excel or CSV file (default: %(default)s).")
+    parser.add_argument('-o', '--out', default=OUT, help="Output Excel or CSV file (default: %(default)s).")
 
 list_nets.add_arguments = _add_arguments
 

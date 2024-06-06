@@ -21,6 +21,7 @@ from zut import (Header, add_func_command, get_description_text, get_help_text,
                  out_table)
 
 from . import VCenterClient, get_obj_path, get_obj_ref
+from .settings import OUT
 
 _logger = logging.getLogger(__name__)
 
@@ -40,10 +41,7 @@ def add_datastore_commands(commands_subparsers: _SubParsersAction[ArgumentParser
     add_func_command(subparsers, delete_from_datastore, name='delete')
 
 
-_DEFAULT_OUT = '{title}.csv'
-
-
-def list_datastores(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern = None, *, normalize: bool = False, key: str = 'name', out: os.PathLike|IOBase = _DEFAULT_OUT):
+def list_datastores(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern = None, *, normalize: bool = False, key: str = 'name', out: os.PathLike|IOBase = OUT):
     headers = [
         'name',
         'ref',
@@ -88,7 +86,7 @@ def _add_arguments(parser: ArgumentParser):
     parser.add_argument('search', nargs='*', help="Search term(s).")
     parser.add_argument('-n', '--normalize', action='store_true', help="Normalise search term(s).")
     parser.add_argument('-k', '--key', choices=['name', 'ref'], default='name', help="Search key (default: %(default)s).")
-    parser.add_argument('-o', '--out', default=_DEFAULT_OUT, help="Output table (default: %(default)s).")
+    parser.add_argument('-o', '--out', default=OUT, help="Output table (default: %(default)s).")
 
 list_datastores.add_arguments = _add_arguments
 
@@ -206,7 +204,7 @@ def get_datastore_stats(vcenter: VCenterClient, obj: vim.Datastore, path: str = 
     return sorted(stats.values(), key=lambda stat: stat.path)
 
 
-def list_datastore_elements(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern = None, *, normalize: bool = False, key: str = 'name', path: str = None, max_depth: int = None, out: os.PathLike|IOBase = _DEFAULT_OUT, bytes: bool = False):
+def list_datastore_elements(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern = None, *, normalize: bool = False, key: str = 'name', path: str = None, max_depth: int = None, out: os.PathLike|IOBase = OUT, bytes: bool = False):
     """
     List datastore elements (files and directories).
     """
@@ -227,13 +225,13 @@ def _add_arguments(parser: ArgumentParser):
     parser.add_argument('-k', '--key', choices=['name', 'ref'], default='name', help="Search key (default: %(default)s).")
     parser.add_argument("--path", help="Detail elements only for the given path.")
     parser.add_argument("--max-depth", type=int, help="Detail elements until the given depth (default: %(default)s).")
-    parser.add_argument('-o', '--out', default=_DEFAULT_OUT, help="Output file (default: %(default)s).")
+    parser.add_argument('-o', '--out', default=OUT, help="Output file (default: %(default)s).")
     parser.add_argument('--bytes', action="store_true", help="Display size as bytes.")
 
 list_datastore_elements.add_arguments = _add_arguments
 
 
-def list_datastore_stats(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern = None, *, normalize: bool = False, key: str = 'name', path: str = None, max_depth: int = 1, out: os.PathLike|IOBase = _DEFAULT_OUT, bytes: bool = False):
+def list_datastore_stats(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern = None, *, normalize: bool = False, key: str = 'name', path: str = None, max_depth: int = 1, out: os.PathLike|IOBase = OUT, bytes: bool = False):
     """
     Analyze stats about datastore elements (files and directories).
     """
@@ -254,7 +252,7 @@ def _add_arguments(parser: ArgumentParser):
     parser.add_argument('-k', '--key', choices=['name', 'ref'], default='name', help="Search key (default: %(default)s).")
     parser.add_argument("--path", help="Detail elements only for the given path.")
     parser.add_argument("--max-depth", type=int, default=1, help="Detail elements until the given depth (default: %(default)s).")
-    parser.add_argument('-o', '--out', default=_DEFAULT_OUT, help="Output file (default: %(default)s).")
+    parser.add_argument('-o', '--out', default=OUT, help="Output file (default: %(default)s).")
     parser.add_argument('--bytes', action="store_true", help="Display size as bytes.")
 
 list_datastore_stats.add_arguments = _add_arguments

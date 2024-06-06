@@ -10,6 +10,7 @@ from io import IOBase
 from zut import out_table, get_help_text, get_description_text, add_func_command
 
 from . import VCenterClient
+from .settings import OUT
 
 def add_tag_commands(commands_subparsers: _SubParsersAction[ArgumentParser], *, name: str):
     parser = commands_subparsers.add_parser(name, help=get_help_text(__doc__), description=get_description_text(__doc__), formatter_class=RawTextHelpFormatter, add_help=False)
@@ -22,9 +23,7 @@ def add_tag_commands(commands_subparsers: _SubParsersAction[ArgumentParser], *, 
     add_func_command(subparsers, list_categories, name='categories')
 
 
-_DEFAULT_OUT = '{title}.csv'
-
-def list_categories(vcenter: VCenterClient, out: os.PathLike|IOBase = _DEFAULT_OUT):
+def list_categories(vcenter: VCenterClient, out: os.PathLike|IOBase = OUT):
     """
     Export tag categories.
     """
@@ -41,12 +40,12 @@ def list_categories(vcenter: VCenterClient, out: os.PathLike|IOBase = _DEFAULT_O
             ])
 
 def _add_arguments(parser: ArgumentParser):
-    parser.add_argument('-o', '--out', default=_DEFAULT_OUT, help="Output table (default: %(default)s).")
+    parser.add_argument('-o', '--out', default=OUT, help="Output table (default: %(default)s).")
 
 list_categories.add_arguments = _add_arguments
 
 
-def list_tags(vcenter: VCenterClient, out: os.PathLike|IOBase = _DEFAULT_OUT):
+def list_tags(vcenter: VCenterClient, out: os.PathLike|IOBase = OUT):
     """
     Export tags.
     """
@@ -62,6 +61,6 @@ def list_tags(vcenter: VCenterClient, out: os.PathLike|IOBase = _DEFAULT_OUT):
             ])
 
 def _add_arguments(parser: ArgumentParser):
-    parser.add_argument('-o', '--out', default=_DEFAULT_OUT, help="Output table (default: %(default)s).")
+    parser.add_argument('-o', '--out', default=OUT, help="Output table (default: %(default)s).")
 
 list_tags.add_arguments = _add_arguments

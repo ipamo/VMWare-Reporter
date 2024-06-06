@@ -1,147 +1,71 @@
 """
-Analyze performance counters and metrics, and export performance data.
+Extract performance data (or list available performance intervals, counters or metrics, see sub commands).
 """
 from __future__ import annotations
 
-from datetime import datetime
+from contextlib import nullcontext
 import logging
+import math
 import os
 import re
-from argparse import ArgumentParser, RawTextHelpFormatter, _SubParsersAction
-from io import IOBase
+from argparse import ArgumentParser
+from datetime import datetime, timedelta
+from io import IOBase, StringIO
+from time import sleep, time_ns
+from typing import Iterable, Self
 
-from pyVmomi import vim
-from zut import (Header, add_func_command, get_description_text, get_help_text,
-                 out_table, is_naive, make_aware)
+from pyVmomi import vim, vmodl
+from tabulate import tabulate
+from zut import add_func_command, is_naive, make_aware, out_table, write_live
 
-from . import VCenterClient, get_obj_name, get_obj_ref, dictify_obj, get_obj_typename
-from .settings import CONFIG, CONFIG_SECTION
+from . import (VCenterClient, get_obj_name, get_obj_ref, get_obj_refprefix,
+               get_obj_typename)
+from .settings import OUT, COUNTERS
 
 _logger = logging.getLogger(__name__)
 
 
-def add_perf_commands(commands_subparsers: _SubParsersAction[ArgumentParser], *, name: str):
-    parser = commands_subparsers.add_parser(name, help=get_help_text(__doc__), description=get_description_text(__doc__), formatter_class=RawTextHelpFormatter, add_help=False)
+def handle(vcenter: VCenterClient, **kwargs):
+    return perf_data_export(vcenter, **kwargs)
 
-    group = parser.add_argument_group(title='Command options')
-    group.add_argument('-h', '--help', action='help', help=f"Show this command help message and exit.")
+def _handle_add_arguments(parser: ArgumentParser, *, for_default_command = False):
+    if for_default_command:
+        parser.add_argument('search', nargs='*', help="Search term(s).")
 
-    subparsers = parser.add_subparsers(title='Sub commands')
-    add_func_command(subparsers, list_perf_counters, name='counters')
-    add_func_command(subparsers, list_perf_intervals, name='intervals')
-    add_func_command(subparsers, list_perf_metrics, name='metrics')    
-    add_func_command(subparsers, extract_perf_data, name='data')
-
-
-_DEFAULT_OUT = '{title}.csv'
-
-
-def list_perf_counters(vcenter: VCenterClient, group: str = None, level: int = None, out: os.PathLike|IOBase = _DEFAULT_OUT):
-    headers = [
-        'key', 'group', 'name', 'rollup_type', 'stats_type', 'unit', 'level', 'per_device_level'
-    ]
-
-    pm = vcenter.service_content.perfManager
-
-    with out_table(out, title='perf_counters', dir=vcenter.out_dir, env=vcenter.env, headers=headers) as t:
-        for counter in sorted(pm.perfCounter, key=lambda counter: (counter.groupInfo.key, counter.nameInfo.key, counter.rollupType)):
-            if group is not None and counter.groupInfo.key != group:
-                continue
-            if level is not None and counter.level > level:
-                continue        
-            t.append([counter.key, counter.groupInfo.key, counter.nameInfo.key, counter.rollupType, counter.statsType, counter.unitInfo.key, counter.level, counter.perDeviceLevel])
-
-def _add_arguments(parser: ArgumentParser):
-    parser.add_argument('-g', '--group', help="Group of the counters (example: cpu)")
-    parser.add_argument('-l', '--level', type=int, help="Max level of the counters (from 1 to 4)")
-    parser.add_argument('-o', '--out', default=_DEFAULT_OUT, help="Output table (default: %(default)s).")
-
-list_perf_counters.add_arguments = _add_arguments
-
-
-def list_perf_intervals(vcenter: VCenterClient, out: os.PathLike|IOBase = _DEFAULT_OUT):
-    headers = [
-        'key', 'name', 'enabled', 'level', 'sampling_period'
-    ]
-
-    pm = vcenter.service_content.perfManager
-
-    with out_table(out, title='perf_intervals', dir=vcenter.out_dir, env=vcenter.env, headers=headers) as t:
-        for interval in sorted(pm.historicalInterval, key=lambda interval: interval.samplingPeriod):
-            t.append([interval.key, interval.name, interval.enabled, interval.level, interval.samplingPeriod])
-
-
-def _add_arguments(parser: ArgumentParser):
-    parser.add_argument('-o', '--out', default=_DEFAULT_OUT, help="Output table (default: %(default)s).")
-
-list_perf_intervals.add_arguments = _add_arguments
-
-
-def list_perf_metrics(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern = None, *, normalize: bool = False, key: str = 'name', first: bool = None, types: list[type|str]|type|str = None, out: os.PathLike|IOBase = _DEFAULT_OUT):
-    """
-    List available metrics per entity objects.
-    """
-    if first is None and not search:
-        first = True
-    first_types = []
-
-    pm = vcenter.service_content.perfManager
-    counters_by_key: dict[str,vim.PerformanceManager.CounterInfo] = {}
-    for counter in sorted(pm.perfCounter, key=lambda counter: (counter.groupInfo.key, counter.nameInfo.key, counter.rollupType)):
-        counters_by_key[counter.key] = counter
-        
-    headers = [
-        'entity_name', 'entity_ref', 'entity_type', 'instance', 'key', 'group', 'name', 'rollup_type', 'stats_type', 'unit', 'level', 'per_device_level'
-    ]
-
-    with out_table(out, title='perf_metrics', dir=vcenter.out_dir, env=vcenter.env, headers=headers) as t:
-        for obj in vcenter.iter_objs(types, search=search, normalize=normalize, key=key):
-            if isinstance(obj, (vim.Folder, vim.Network)):
-                continue # No performance data for these types
-
-            if first:
-                if type(obj) in first_types:
-                    continue
-                else:                    
-                    first_types.append(type(obj))
-
-            name = get_obj_name(obj)
-            ref = get_obj_ref(obj)        
-            _logger.info(f"List {name} ({ref}) metrics")
-    
-            for metric in pm.QueryAvailablePerfMetric(entity=obj):
-                counter = counters_by_key[metric.counterId]
-                t.append([
-                    name,
-                    ref,
-                    get_obj_typename(obj),
-                    metric.instance,
-                    counter.key,
-                    counter.groupInfo.key,
-                    counter.nameInfo.key,
-                    counter.rollupType,
-                    counter.statsType,
-                    counter.unitInfo.key,
-                    counter.level,
-                    counter.perDeviceLevel
-                ])
-
-
-def _add_arguments(parser: ArgumentParser):
-    parser.add_argument('search', nargs='*', help="Search term(s).")
+    parser.add_argument('-c', '--counter', dest='counters', nargs='*', help="Counter(s).")
+    parser.add_argument('--instance', help="Metric instance.")
+    parser.add_argument('--consolidate', action='store_true')
+    parser.add_argument('-i', '--interval', help="Interval sampling period (see `perf interval` command).")
+    parser.add_argument('--start', help="The server time from which to obtain counters (the specified start time is EXCLUDED from the returned samples).")
+    parser.add_argument('--end', help="The server time up to which statistics are retrieved (the specified end time is INCLUDED in the returned samples).")
     parser.add_argument('-n', '--normalize', action='store_true', help="Normalise search term(s).")
     parser.add_argument('-k', '--key', choices=['name', 'ref'], default='name', help="Search key (default: %(default)s).")
-    parser.add_argument('--first', action='store_true', default=None, help="Only handle the first object found for each type.")
+    parser.add_argument('--first', action='store_true', help="Only handle the first object found for each type.")
     parser.add_argument('-t', '--type', dest='types', metavar='type', help="Managed object type name (example: datastore).")
-    parser.add_argument('-o', '--out', default=_DEFAULT_OUT, help="Output table (default: %(default)s).")
+    parser.add_argument('-o', '--out', default=OUT, help="Output table (default: %(default)s).")
 
-list_perf_metrics.add_arguments = _add_arguments
+    if for_default_command:
+        return
+
+    subparsers = parser.add_subparsers(title='sub commands')
+    add_func_command(subparsers, perf_data_export, name='data')
+    add_func_command(subparsers, perf_live_output, name='live')
+    add_func_command(subparsers, perf_interval_list, name='interval')
+    add_func_command(subparsers, perf_counter_list, name='counter')
+    add_func_command(subparsers, perf_provider_list, name='provider')
+    add_func_command(subparsers, perf_metric_list, name='metric')
+
+handle.add_arguments = _handle_add_arguments
 
 
-_DEFAULT_INTERVAL = 1800
-_DEFAULT_INSTANCE = '*'
+def perf_data_export(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern = None, *, counters: list[int|str] = None, instance: str = None, consolidate = False, interval: str|int = None, start: datetime|str = None, end: datetime|str = None, normalize: bool = False, key: str = 'name', first: bool = None, types: list[type|str]|type|str = None, out: os.PathLike|IOBase = OUT):    
+    objs = vcenter.get_objs(types, search=search, normalize=normalize, key=key, first=first)
 
-def extract_perf_data(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern = None, *, counters: list[str] = None, instance: str = _DEFAULT_INSTANCE, interval: int = _DEFAULT_INTERVAL, start: datetime|str = None, end: datetime|str = None, normalize: bool = False, key: str = 'name', first: bool = None, types: list[type|str]|type|str = None, out: os.PathLike|IOBase = _DEFAULT_OUT):
+    if counters and (counters == '*' or '*' in counters):
+        counters = None
+    elif not counters:
+        counters = COUNTERS
+
     if isinstance(start, str):
         start = datetime.fromisoformat(start)
         if is_naive(start):
@@ -151,138 +75,810 @@ def extract_perf_data(vcenter: VCenterClient, search: list[str|re.Pattern]|str|r
         end = datetime.fromisoformat(end)
         if is_naive(end):
             end = make_aware(end)
-    
-    first_types = []
-    excluded_types = []
 
-    pm = vcenter.service_content.perfManager
-    counters_by_key: dict[str,vim.PerformanceManager.CounterInfo] = {}
-    for counter in sorted(pm.perfCounter, key=lambda counter: (counter.groupInfo.key, counter.nameInfo.key, counter.rollupType)):
-        counters_by_key[counter.key] = counter
-
-    class SeriesInfo:
-        def __init__(self, counter: vim.PerformanceManager.CounterInfo, series_index, headers_index):
-            self.counter = counter
-            self.series_index = series_index
-            self.headers_index = headers_index
-            self.is_percent = counter.unitInfo.key == 'percent'
-
-        def convert_value(self, value):
-            if self.is_percent:
-                return value / 10000
-            else:
-                return value
-    
-    all_counters = []
-    if counters:
-        all_counters = counters
+    handler = PerfHandler(vcenter, consolidate=consolidate)
+    if not interval or interval in {20, 'realtime'}:
+        if start or end or consolidate:
+            handler.extract_realtime(objs, counters=counters, instance=instance, start=start, end=end)
+        else:
+            handler.extract_realtime(objs, counters=counters, instance=instance, max_sample=1)
     else:
-        for option in CONFIG.options(CONFIG_SECTION):
-            if option.endswith('_counters'):
-                for counter in CONFIG.getlist(CONFIG_SECTION, option, fallback=[], delimiter=','):
-                    if not counter in all_counters:
-                        all_counters.append(counter)
- 
-    headers = [
-        'entity_name', 'entity_ref', 'entity_type', 'instance', 'interval', 'timestamp', *all_counters
-    ]
+        handler.extract(objs, counters=counters, instance=instance, interval=interval, start=start, end=end)
+    handler.export_multi(out, counter_details=True, with_entity_ref=True, translate_percent=True)
 
-    with out_table(out, title='perf_data', dir=vcenter.out_dir, env=vcenter.env, headers=headers) as t:
-        for obj in vcenter.iter_objs(types, search=search, normalize=normalize, key=key):
-            if isinstance(obj, (vim.Folder, vim.Network)):
-                continue # No performance data for these types
+def _add_arguments(parser: ArgumentParser):
+    _handle_add_arguments(parser, for_default_command=True)
 
-            if first:
-                if type(obj) in first_types:
-                    continue
-                else:
-                    first_types.append(type(obj))
+perf_data_export.add_arguments = _add_arguments
 
-            obj_counters = []
-            if counters:
-                obj_counters = list(counters)
-            else:
-                obj_counters = CONFIG.getlist(CONFIG_SECTION, f"{type(obj).__name__.split('.')[-1].lower()}_counters", fallback=[], delimiter=',')
-            
-            if not obj_counters:
-                if not type(obj) in excluded_types:
-                    _logger.warning(f"Exclude type {type(obj).__name__}: no counter defined")
-                    excluded_types.append(type(obj))
-                continue
 
-            try:
-                name = get_obj_name(obj)
-                ref = get_obj_ref(obj)        
-                _logger.info(f"Extract {name} ({ref}) perf data")
-                
-                # Determine metrics
-                metrics = []
-                headers_index_per_counter_key: dict[str,int] = {}
-                for metric in pm.QueryAvailablePerfMetric(entity=obj):
-                    counter = counters_by_key[metric.counterId]                
-                    counter_name = f"{counter.groupInfo.key}.{counter.nameInfo.key}"
-                    counter_qualifiedname = f"{counter_name}:{counter.rollupType}"
-                    if counter_name in obj_counters:
-                        obj_counters.remove(counter_name)
-                        headers_index_per_counter_key[metric.counterId] = headers.index(counter_name)
-                        metrics.append(vim.PerformanceManager.MetricId(counterId=metric.counterId, instance=instance))
-                    elif counter_qualifiedname in obj_counters:
-                        obj_counters.remove(counter_qualifiedname)
-                        headers_index_per_counter_key[metric.counterId] = headers.index(counter_qualifiedname)
-                        metrics.append(vim.PerformanceManager.MetricId(counterId=metric.counterId, instance=instance))
+def perf_live_output(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern = None, *, counters: list[int|str] = None, with_instances = False, consolidate = False, normalize: bool = False, key: str = 'name', first: bool = None, types: list[type|str]|type|str = None, **ignored):
+    objs = vcenter.get_objs(types, search, normalize=normalize, key=key, first=first)
 
-                if obj_counters:
-                    _logger.warning(f"Counter(s) not available for {name} ({ref}): {', '.join(obj_counters)}")          
-                            
-                # Query stats
-                spec = vim.PerformanceManager.QuerySpec(entity=obj, metricId=metrics, intervalId=interval, startTime=start, endTime=end)
+    if not counters:
+        if not COUNTERS:
+            raise ValueError("Counters must be provided")
+        counters = COUNTERS
 
-                for result in pm.QueryStats([spec]):
-                    # Analyze result series
-                    series_by_instance: dict[str,list[SeriesInfo]] = {}
-                    for series_index, series in enumerate(result.value):
-                        metric: vim.PerformanceManager.MetricId = series.id
-                        headers_index = headers_index_per_counter_key[metric.counterId]
-                        info = SeriesInfo(counters_by_key[metric.counterId], series_index, headers_index)
-                        if instance_series := series_by_instance.get(metric.instance):
-                            instance_series.append(info)
-                        else:
-                            series_by_instance[metric.instance] = [info]
-                        
-                    # Export data
-                    for metric_instance, seriesinfo_list in series_by_instance.items():
-                        for sample_index, sample_info in enumerate(result.sampleInfo):
-                            row = [
-                                name,
-                                ref,
-                                get_obj_typename(obj),
-                                metric_instance,
-                                sample_info.interval,
-                                sample_info.timestamp,
-                            ]
-                            while len(row) < len(headers):
-                                row.append(None)
+    handler = PerfHandler(vcenter, consolidate=consolidate)
+    while True:
+        handler.clear()
 
-                            for info in seriesinfo_list:
-                                value = result.value[info.series_index].value[sample_index]
-                                row[info.headers_index] = info.convert_value(value)
-                            
-                            t.append(row)
+        now = datetime.now()
+        t0 = time_ns()
+        handler.extract_realtime(objs, instance='*' if with_instances else '', counters=counters, max_sample=12)        
+        duration_ms = (time_ns() - t0) / 10**6
+        
+        headers, rows = handler.export_single(translate_percent=100)
+        tabtext = tabulate(rows, headers, intfmt=',', floatfmt=',.0f')
+        text = f"Updated: {now.strftime('%Y-%m-%d %H:%M:%S')} (duration: {duration_ms:,.0f} ms)\n"
+        text += tabtext
+        write_live(text, newline=False)
+        sleep(1.0)
 
-            except Exception as err:
-                _logger.exception(f"Error while extracting {str(obj)} perf data: {err}")
 
 def _add_arguments(parser: ArgumentParser):
     parser.add_argument('search', nargs='*', help="Search term(s).")
-    parser.add_argument('-c', '--counters', nargs='*', help="Counter(s).")
-    parser.add_argument('--instance', default=_DEFAULT_INSTANCE, help="Metric instance (default: %(default)s).")
-    parser.add_argument('-i', '--interval', type=int, default=_DEFAULT_INTERVAL, help="Interval sampling period (see `perf intervals` command). Default: 1800 (Past week).")
-    parser.add_argument('--start', help="The server time from which to obtain counters (the specified start time is EXCLUDED from the returned samples).")
-    parser.add_argument('--end', help="The server time up to which statistics are retrieved (the specified end time is INCLUDED in the returned samples).")
+    parser.add_argument('-c', '--counter', dest='counters', nargs='*', help="Counter(s).")
+    parser.add_argument('-i', '--instances', action='store_true', dest='with_instances')
+    parser.add_argument('--consolidate', action='store_true')
     parser.add_argument('-n', '--normalize', action='store_true', help="Normalise search term(s).")
     parser.add_argument('-k', '--key', choices=['name', 'ref'], default='name', help="Search key (default: %(default)s).")
-    parser.add_argument('--first', action='store_true', default=None, help="Only handle the first object found for each type.")
+    parser.add_argument('--first', action='store_true', help="Only handle the first object found for each type.")
     parser.add_argument('-t', '--type', dest='types', metavar='type', help="Managed object type name (example: datastore).")
-    parser.add_argument('-o', '--out', default=_DEFAULT_OUT, help="Output table (default: %(default)s).")
 
-extract_perf_data.add_arguments = _add_arguments
+perf_live_output.add_arguments = _add_arguments
+
+
+def perf_interval_list(vcenter: VCenterClient, out: os.PathLike|IOBase = OUT, **ignored):
+    """
+    List performance intervals configured on the system.
+    """
+    headers = [
+        'key', 'name', 'enabled', 'level', 'sampling_period'
+    ]
+
+    with out_table(out, title='perf_interval', dir=vcenter.out_dir, env=vcenter.env, headers=headers) as t:
+        for interval in sorted(vcenter.perf_intervals_by_name.values(), key=lambda interval: interval.samplingPeriod):
+            t.append([interval.key, interval.name, interval.enabled, interval.level, interval.samplingPeriod])
+
+def _add_arguments(parser: ArgumentParser):
+    parser.add_argument('-o', '--out', default=OUT, help="Output table (default: %(default)s).")
+
+perf_interval_list.add_arguments = _add_arguments
+
+
+def perf_counter_list(vcenter: VCenterClient, group: str = None, level: int = None, out: os.PathLike|IOBase = OUT, **ignored):
+    """
+    List performance counters configured on the system.
+    """
+
+    headers = [
+        'key', 'group', 'name', 'rollup_type', 'stats_type', 'unit', 'level', 'per_device_level', 'label', 'summary'
+    ]
+
+    pm = vcenter.service_content.perfManager
+    
+    with out_table(out, title='perf_counter', dir=vcenter.out_dir, env=vcenter.env, headers=headers) as t:
+        for counter in sorted(pm.perfCounter, key=lambda counter: (counter.groupInfo.key, counter.nameInfo.key, counter.rollupType)):
+            if group is not None and counter.groupInfo.key != group:
+                continue
+            if level is not None and counter.level > level:
+                continue        
+            t.append([counter.key, counter.groupInfo.key, counter.nameInfo.key, counter.rollupType, counter.statsType, counter.unitInfo.key, counter.level, counter.perDeviceLevel, counter.nameInfo.label, counter.nameInfo.summary])
+
+def _add_arguments(parser: ArgumentParser):
+    parser.add_argument('-g', '--group', help="Group of the counters (example: cpu)")
+    parser.add_argument('-l', '--level', type=int, help="Max level of the counters (from 1 to 4)")
+    parser.add_argument('-o', '--out', default=OUT, help="Output table (default: %(default)s).")
+
+perf_counter_list.add_arguments = _add_arguments
+
+
+def perf_provider_list(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern = None, *, normalize: bool = False, key: str = 'name', first: bool = None, types: list[type|str]|type|str = None, out: os.PathLike|IOBase = OUT, **ignored):
+    """
+    List performance providers (managed entities only).
+    """
+    if first is None and not search:
+        first = True
+
+    pm = vcenter.service_content.perfManager
+
+    counters_by_key: dict[str,vim.PerformanceManager.CounterInfo] = {}
+    for counter in sorted(pm.perfCounter, key=lambda counter: (counter.groupInfo.key, counter.nameInfo.key, counter.rollupType)):
+        counters_by_key[counter.key] = counter
+        
+    headers = [
+        'entity_name', 'entity_ref', 'entity_type', 'history', 'realtime', 'realtime_refresh_rate'
+    ]
+
+    objs = vcenter.get_objs(types, search=search, normalize=normalize, key=key, first=first)
+    objs_count = len(objs)
+    t0 = None
+
+    with out_table(out, title='perf_provider', dir=vcenter.out_dir, env=vcenter.env, headers=headers) as table:
+        for i, obj in enumerate(objs):
+            name = get_obj_name(obj)
+            ref = get_obj_ref(obj)
+            try:
+                t = time_ns()
+                if t0 is None or (t - t0) >= 10**9 or i == objs_count - 1:
+                    _logger.info(f"List providers {i+1:,}/{objs_count:,} ({100 * (i+1)/objs_count:.0f}%): {name} ({ref})")
+                    t0 = t
+                
+                provider_summary = pm.QueryProviderSummary(entity=obj)
+                table.append([
+                    name,
+                    ref,
+                    get_obj_typename(obj),
+                    provider_summary.summarySupported,
+                    provider_summary.currentSupported,
+                    provider_summary.refreshRate if provider_summary.currentSupported else None, # seconds
+                ])
+            except vmodl.fault.InvalidArgument:
+                # this is not a provider
+                pass
+            except:
+                _logger.exception(f"Error while listing providers for {name} ({ref})")   
+
+
+def _add_arguments(parser: ArgumentParser):
+    parser.add_argument('search', nargs='*', help="Search term(s).")
+    parser.add_argument('-n', '--normalize', action='store_true', help="Normalise search term(s).")
+    parser.add_argument('-k', '--key', choices=['name', 'ref'], default='name', help="Search key (default: %(default)s).")
+    parser.add_argument('--first', action='store_true', help="Only handle the first object found for each type.")
+    parser.add_argument('-t', '--type', dest='types', metavar='type', help="Managed object type name (example: datastore).")
+    parser.add_argument('-o', '--out', default=OUT, help="Output table (default: %(default)s).")
+
+perf_provider_list.add_arguments = _add_arguments
+
+
+def perf_metric_list(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern = None, *, normalize: bool = False, key: str = 'name', first: bool = None, types: list[type|str]|type|str = None, out: os.PathLike|IOBase = OUT, **ignored):
+    """
+    List available metrics (managed entities and physical or virtual devices associated with managed entities).
+    """
+    if first is None and not search:
+        first = True
+    
+    pm = vcenter.service_content.perfManager
+
+    counters_by_key: dict[str,vim.PerformanceManager.CounterInfo] = {}
+    for counter in sorted(pm.perfCounter, key=lambda counter: (counter.groupInfo.key, counter.nameInfo.key, counter.rollupType)):
+        counters_by_key[counter.key] = counter
+        
+    headers = [
+        'entity_name', 'entity_ref', 'entity_type', 'instance', 'key', 'group', 'name', 'rollup_type', 'stats_type', 'unit', 'level', 'per_device_level', 'label', 'summary'
+    ]
+
+    objs = vcenter.get_objs(types, search=search, normalize=normalize, first=first, key=key)
+    objs_count = len(objs)
+    t0 = None
+
+    with out_table(out, title='perf_metric', dir=vcenter.out_dir, env=vcenter.env, headers=headers) as table:
+        for i, obj in enumerate(objs):
+            if isinstance(obj, (vim.Folder, vim.Network)):
+                continue # No performance data for these types
+
+            name = get_obj_name(obj)
+            ref = get_obj_ref(obj)
+            
+            try:
+                t = time_ns()
+                if t0 is None or (t - t0) >= 10**9 or i == objs_count - 1:
+                    _logger.info(f"List metrics {i+1:,}/{objs_count:,} ({100 * (i+1)/objs_count:.0f}%): {name} ({ref})")
+                    t0 = t
+        
+                for metric in pm.QueryAvailablePerfMetric(entity=obj):
+                    counter = counters_by_key[metric.counterId]
+                    table.append([
+                        name,
+                        ref,
+                        get_obj_typename(obj),
+                        metric.instance,
+                        counter.key,
+                        counter.groupInfo.key,
+                        counter.nameInfo.key,
+                        counter.rollupType,
+                        counter.statsType,
+                        counter.unitInfo.key,
+                        counter.level,
+                        counter.perDeviceLevel,
+                        counter.nameInfo.label,
+                        counter.nameInfo.summary,
+                    ])            
+            except:
+                _logger.exception(f"Error while listing metrics for {name} ({ref})")
+
+def _add_arguments(parser: ArgumentParser):
+    parser.add_argument('search', nargs='*', help="Search term(s).")
+    parser.add_argument('-n', '--normalize', action='store_true', help="Normalise search term(s).")
+    parser.add_argument('-k', '--key', choices=['name', 'ref'], default='name', help="Search key (default: %(default)s).")
+    parser.add_argument('--first', action='store_true', help="Only handle the first object found for each type.")
+    parser.add_argument('-t', '--type', dest='types', metavar='type', help="Managed object type name (example: datastore).")
+    parser.add_argument('-o', '--out', default=OUT, help="Output table (default: %(default)s).")
+
+perf_metric_list.add_arguments = _add_arguments
+
+
+
+class PerfHandler:
+    def __init__(self, vcenter: VCenterClient, *, consolidate = False):
+        self._vcenter = vcenter
+        self._perf_manager = vcenter.service_content.perfManager
+
+        self._consolidate = consolidate
+
+        self._rows: dict[str,dict[vim.ManagedEntity,dict[str,dict[str,dict[datetime,dict[int,PerfResultRow]]]]]] = {}
+        """ Row containers: `refprefix` -> `entity` ->`instance` (empty for entity) -> `counter_group` (empty for entity) -> `timestamp` -> `interval` """
+
+        # clearable caches (for this set of data)
+        self._row_count = 0
+        self._intervals: set[int] = set()
+        self._used_counters: dict[str,dict[str,dict[int,vim.PerformanceManager.CounterInfo|int]]] = {}
+        """ Used counter containers: `refprefix` -> `counter_group` (empty for entity) -> `counter_key` -> `counter` """
+
+        # persistent caches (general purpose)
+        self._all_counters_by_key = {counter.key: counter for counter in self._perf_manager.perfCounter}
+        self._available_counter_keys_by_type: dict[type,list[int]] = {}
+        self._given_counter_keys: list[int] = [] # ordered
+
+
+    def clear(self):
+        self._rows.clear()
+        self._row_count = 0
+        self._intervals.clear()
+        self._used_counters.clear()
+
+
+    def extract(self, objs: list[vim.ManagedEntity]|vim.ManagedEntity = None, *, counters: list[int|str] = None, instance: str = None, interval: str|int = None, start: datetime = None, end: datetime = None):
+        if objs is None:
+            objs = self._vcenter.get_objs()
+        elif isinstance(objs, vim.ManagedEntity):
+            objs = [objs]
+
+        if not objs:
+            raise ValueError("No entities.")
+
+        if not interval and not start and not end:
+            interval = self._vcenter.perf_intervals_by_name['Past day'].samplingPeriod
+            start = datetime.now() - timedelta(minutes=15)
+            end = None        
+        else:
+            if isinstance(interval, str):
+                if re.match(r'^\d+$', interval):
+                    interval = int(interval)
+                else:
+                    interval = self._vcenter.perf_intervals_by_name[f'Past {interval}'].samplingPeriod
+            elif not interval:
+                interval = self._vcenter.perf_intervals_by_name['Past day'].samplingPeriod
+
+        for type_objs, counter_keys in self._get_counter_keys_by_type(objs, counters):
+            results = self.query(type_objs, counters=counter_keys, instance=instance, interval=interval, start=start, end=end)
+            self.add_results(results)
+
+
+    def extract_realtime(self, objs: list[vim.ManagedEntity]|vim.ManagedEntity = None, *, counters: list[int|str] = None, instance: str = None, max_sample: int = None, start: datetime = None, end: datetime = None):
+        if objs is None:
+            objs = self._vcenter.get_objs()
+        elif isinstance(objs, vim.ManagedEntity):
+            objs = [objs]
+
+        objs_by_refresh_rate: dict[int,list[vim.ManagedEntity]] = {}
+        for obj in objs:
+            try:
+                provider_summary = self._perf_manager.QueryProviderSummary(obj)
+            except vmodl.fault.InvalidArgument:
+                continue # not a perf provider
+
+            if not provider_summary.currentSupported:
+                continue # perf provider does not support realtime stats
+
+            refresh_rate = provider_summary.refreshRate
+            if refresh_rate_objs := objs_by_refresh_rate.get(refresh_rate):
+                refresh_rate_objs.append(obj)
+            else:
+                objs_by_refresh_rate[refresh_rate] = [obj]
+
+        if not objs_by_refresh_rate:
+            raise ValueError("No entities supporting realtime perfs.")
+
+        for refresh_rate, refresh_rate_objs in objs_by_refresh_rate.items():
+            for type_objs, counter_keys in self._get_counter_keys_by_type(refresh_rate_objs, counters):
+                results = self.query(type_objs, counters=counter_keys, instance=instance, interval=refresh_rate, max_sample=max_sample, start=start, end=end)
+                self.add_results(results)
+
+
+    def _get_counter_keys_by_type(self, objs: list[vim.ManagedEntity], counters: list[int|str]) -> list[tuple[list[vim.ManagedEntity], list[int]]]:
+        if not counters:
+            return [(objs, None)]
+     
+        requested_counter_keys = set()
+        for counter in counters:
+            if isinstance(counter, str):
+                if re.match(r'^\d+$', counter):
+                    counter_key = int(counter)
+                    requested_counter_keys.add(counter_key)                        
+                    if not counter_key in self._given_counter_keys:
+                        self._given_counter_keys.append(counter_key)
+                else:
+                    for counter_key in self._find_counter_keys(counter):
+                        requested_counter_keys.add(counter_key)
+                        if not counter_key in self._given_counter_keys:
+                            self._given_counter_keys.append(counter_key)
+            else:
+                requested_counter_keys.add(counter)
+                if not counter in self._given_counter_keys:
+                    self._given_counter_keys.append(counter)
+        
+        counter_keys_by_type = {}
+        for obj in objs:
+            if type(obj) in counter_keys_by_type:
+                continue
+
+            # Get type_counter_keys from cache (or query it if not in cache)
+            if type(obj) in self._available_counter_keys_by_type:
+                type_counter_keys = self._available_counter_keys_by_type[type(obj)]
+            else:
+                try:
+                    if _logger.isEnabledFor(logging.DEBUG):
+                        _logger.debug(f"start QueryAvailablePerfMetric (entity={get_obj_ref(obj)})...")
+                        t0 = time_ns()
+                        
+                    metrics = self._perf_manager.QueryAvailablePerfMetric(entity=obj)
+                    
+                    if _logger.isEnabledFor(logging.DEBUG):
+                        _logger.debug(f"QueryAvailablePerfMetric (entity={get_obj_ref(obj)}): done, {len(metrics)} counters ({(time_ns() - t0)/10**6:,.1f} ms)")
+
+                except vmodl.fault.InvalidArgument as err:
+                    if err.invalidProperty == 'entity': # not a performance provider
+                        counter_keys_by_type[type(obj)] = None
+                        continue
+                    raise
+
+                type_counter_keys = set(metric.counterId for metric in metrics)
+                self._available_counter_keys_by_type[type(obj)] = type_counter_keys
+
+            counter_keys_by_type[type(obj)] = type_counter_keys.intersection(requested_counter_keys)
+        
+        results = []
+        for obj_type, counter_keys in counter_keys_by_type.items():
+            if not counter_keys:
+                continue
+            type_objs = [obj for obj in objs if type(obj) == obj_type]
+            results.append((type_objs, counter_keys))
+            
+        return results
+
+
+    def query(self, objs: list[vim.ManagedEntity], *, counters: list[int|vim.PerformanceManager.CounterInfo] = None, instance: str = None, interval: str|int = None, max_sample: int = None, start: datetime|str = None, end: datetime|str = None):
+        metrics = None          
+        if counters:
+            metrics = []        
+            for counter in counters:
+                metrics.append(vim.PerformanceManager.MetricId(counterId=counter if isinstance(counter, int) else counter.key, instance=instance if instance is not None else '*'))
+
+        if _logger.isEnabledFor(logging.DEBUG):
+            _logger.debug(f"start QueryPerf (interval={interval}, {len(objs)} entities [{get_obj_typename(objs[0]) if objs else '?'} ...], {len(metrics) if metrics is not None else None} metrics)...")
+            t0 = time_ns()
+        
+        results = self._perf_manager.QueryPerf([vim.PerformanceManager.QuerySpec(entity=obj, startTime=start, endTime=end, intervalId=interval, maxSample=max_sample, metricId=metrics) for obj in objs])
+        
+        if _logger.isEnabledFor(logging.DEBUG):
+            _logger.debug(f"QueryPerf (interval={interval}): done ({(time_ns() - t0)/10**6:,.1f} ms)")
+
+        return results
+
+
+    def _find_counter_keys(self, name: str):
+        counter_keys = []
+
+        for counter in sorted(self._all_counters_by_key.values(), key=lambda c: (c.groupInfo.key, c.nameInfo.key, c.level, c.rollupType, c.statsType)):
+            shortname = f"{counter.groupInfo.key}.{counter.nameInfo.key}"
+            if name == shortname:
+                counter_keys.append(counter.key)
+            else:
+                fullname = f"{shortname}:{counter.rollupType}"
+                if name == fullname:
+                    counter_keys.append(counter.key)
+
+        if not counter_keys:
+            raise ValueError(f"Counter not found: {name}")
+        return counter_keys
+
+
+    def add_results(self, results: list[vim.PerformanceManager.EntityMetric]):
+        if _logger.isEnabledFor(logging.DEBUG):
+            t0 = time_ns()
+
+        entity_results: vim.PerformanceManager.EntityMetric
+        for entity_results in results:
+            samples = entity_results.sampleInfo
+            for series in entity_results.value:
+                if not isinstance(series, vim.PerformanceManager.IntSeries):
+                    raise ValueError(f"Invalid series type: {type(series).__name__}")
+                
+                for i, value in enumerate(series.value):
+                    sample = samples[i]
+                    self._add_value(entity_results.entity, series.id.instance, series.id.counterId, sample.timestamp, sample.interval, value)
+
+        if _logger.isEnabledFor(logging.DEBUG):
+            _logger.debug(f"add_perf_results: done ({(time_ns() - t0)/10**6:,.1f} ms)")
+        
+    
+    def _add_value(self, entity: vim.ManagedEntity, instance: str, counter_key: int, timestamp: datetime, interval: int, value: int):
+        if value == -1:
+            return
+        
+        if self._consolidate:
+            target_timestamp = self._consolidate_timestamp(timestamp)
+        else:
+            target_timestamp = timestamp
+
+        row = self._fetch_row(entity, instance, counter_key, target_timestamp, interval)
+        row.add_value(counter_key, timestamp, value)
+    
+        
+    def _consolidate_timestamp(self, timestamp: datetime):
+        """
+        Defaults to a 2-minute consolidation.
+
+        May be overriden by subclass.
+        """
+        base_timestamp = timestamp.replace(minute=timestamp.minute - (1 if timestamp.minute % 2 == 1 else 0), second=0, microsecond=0)
+        if timestamp == base_timestamp:
+            return base_timestamp
+        else:
+            return base_timestamp + timedelta(minutes=2)
+
+
+    def _fetch_row(self, entity: vim.ManagedEntity, instance: str, counter_key: int, timestamp: datetime, interval: int):
+        #refprefix -> entity -> instance ('' for entity) -> counter_group ('' for entity) -> timestamp -> interval
+
+        refprefix = get_obj_refprefix(entity)
+        refprefix_rows = self._rows.get(refprefix)
+        if refprefix_rows is None:
+            refprefix_rows = {}
+            self._rows[refprefix] = refprefix_rows
+
+        entity_rows = refprefix_rows.get(entity)
+        if entity_rows is None:
+            entity_rows = {}
+            refprefix_rows[entity] = entity_rows
+
+        instance_rows = entity_rows.get(instance)
+        if instance_rows is None:
+            instance_rows = {}
+            entity_rows[instance] = instance_rows
+
+        counter = self._all_counters_by_key.get(counter_key)
+        if instance == '':
+            counter_group = ''
+        else:
+            counter_group = counter.groupInfo.key if counter else 'unknown'        
+        self._report_used_counter(refprefix, counter_group, counter)
+        group_rows = instance_rows.get(counter_group)
+        if group_rows is None:
+            group_rows = {}
+            instance_rows[counter_group] = group_rows
+
+        timestamp_rows = group_rows.get(timestamp)
+        if timestamp_rows is None:
+            timestamp_rows = {}
+            group_rows[timestamp] = timestamp_rows
+
+        row = timestamp_rows.get(interval)
+        if row is None:
+            row = PerfResultRow(entity, instance, timestamp, interval)
+            self._row_count += 1
+            timestamp_rows[interval] = row
+            self._intervals.add(interval)
+
+        return row
+
+
+    def _report_used_counter(self, refprefix: str, counter_group: str, counter: int|vim.PerformanceManager.CounterInfo):
+        # refprefix -> counter group ('' for entity) -> counter key -> counter
+
+        refprefix_counters = self._used_counters.get(refprefix)
+        if refprefix_counters is None:
+            refprefix_counters = {}
+            self._used_counters[refprefix] = refprefix_counters
+
+        group_counters = refprefix_counters.get(counter_group)
+        if group_counters is None:
+            group_counters = {}
+            refprefix_counters[counter_group] = group_counters
+
+        counter_key = counter if isinstance(counter, int) else counter.key
+        group_counters[counter_key] = counter
+
+
+    def _counter_sort_key(self, counter: vim.PerformanceManager.CounterInfo|int):
+        counter_key = counter if isinstance(counter, int) else counter.key
+        try:
+            index = self._given_counter_keys.index(counter_key)
+            return (index, '')
+        except ValueError:
+            return (len(index), get_counter_fullname(counter))
+
+
+    @property
+    def row_count(self):
+        return self._row_count
+    
+
+    def iter_rows(self):
+        #refprefix -> entity -> instance ('' for entity) -> counter_group ('' for entity) -> timestamp -> interval
+
+        for refprefix_rows in self._rows.values():
+            for entity_rows in refprefix_rows.values():
+                for instance_rows in entity_rows.values():
+                    for group_rows in instance_rows.values():
+                        for timestamp_rows in group_rows.values():
+                            for row in timestamp_rows.values():
+                                yield row
+    
+
+    def iter_used_counters(self):
+        # refprefix -> counter group ('' for entity) -> counter key -> counter
+
+        for refprefix_counters in self._used_counters.values():
+            for group_counters in refprefix_counters.values():
+                for counter in group_counters.values():
+                    yield counter
+
+
+    def export_single(self, out: os.PathLike|IOBase = False, *, title: str = None, with_entity_ref=False, translate_percent=False):
+        """
+        Export to a tabulated text.
+        """
+        with_interval = len(self._intervals) > 1
+        with_instance = False
+
+        counters: set[vim.PerformanceManager.CounterInfo|int] = set()
+        for refprefix_counters in self._used_counters.values():
+            for group, group_counters in refprefix_counters.items():
+                if group != '':
+                    with_instance = True
+                for counter in group_counters.values():
+                    counters.add(counter)
+
+        counters: list[vim.PerformanceManager.CounterInfo|int] = sorted(counters, key=self._counter_sort_key)
+
+        headers = ['entity_name']
+        if with_entity_ref:
+            headers.append('entity_ref')
+            headers.append('entity_type')
+        if with_instance:
+            headers.append('instance')
+        headers.append('timestamp')
+        if with_interval:
+            headers.append('interval')
+        if self._consolidate:
+            headers.append('consolidated')
+        
+        consolidate_counters = set()
+        for counter in counters:
+            headers.append(get_counter_fullname(counter))
+            if self._consolidate and counter.rollupType == 'average' and not any(get_counter_fullname(counter) == f"{counter.groupInfo.key}.{counter.nameInfo.key}:maximum" for counter in counters):
+                consolidate_counters.add(counter)
+                headers.append(f"{counter.groupInfo.key}.{counter.nameInfo.key}:max")
+
+        rows = []
+        with out_table(out, title=title, dir=self._vcenter.out_dir, env=self._vcenter.env, floatfmt='.1f', headers=headers) as table:
+            for row in self.iter_rows():
+                # Prepare output row
+                outrow = [get_obj_name(row.entity, use_cache=True)]
+                if with_entity_ref:
+                    outrow.append(get_obj_ref(row.entity))
+                    outrow.append(get_obj_typename(row.entity))
+
+                if with_instance:
+                    outrow.append(row.instance)
+
+                outrow.append(row.timestamp)
+                if with_interval:
+                    outrow.append(row.interval)
+        
+                if self._consolidate:
+                    outrow.append(row.values_count)
+
+                for counter in counters:
+                    value = row.get_value_by_counter(counter, translate_percent)
+                    outrow.append(value)
+
+                    if self._consolidate and counter.rollupType == 'average' and counter in consolidate_counters:
+                        value = row.get_maximum_value_by_counter(counter, translate_percent)
+                        outrow.append(value)
+
+                table.append(outrow)
+                if out is False:
+                    rows.append(outrow)
+
+            if out is False:
+                # sort by: entity_name, instance (if given), timestamp
+                rows.sort(key=lambda row: (
+                    row[0], # entity_name
+                    row[1 + (2 if with_entity_ref else 0)] if with_instance else '', # instance
+                    row[1 + (2 if with_entity_ref else 0) + (1 if with_instance else 0)], # timestamp
+                ))
+                return headers, rows
+            
+
+    def export_multi(self, out: os.PathLike|IOBase = OUT, *, counter_details=False, with_entity_ref=False, translate_percent=False):
+        """
+        Export to entity-and-instance-specific tables.
+        """
+        if _logger.isEnabledFor(logging.DEBUG):
+            t0 = time_ns()
+        
+        for refprefix in sorted(self._rows.keys()):
+            for group in sorted(self._used_counters[refprefix].keys()):
+                counters = sorted(self._used_counters[refprefix][group].values(), key=self._counter_sort_key)
+                        
+                headers = ['entity_name']
+                if with_entity_ref:
+                    headers.append('entity_ref')
+
+                if group == '':
+                    title = f'perfdata_{refprefix}'
+                else:
+                    headers.append('instance')
+                    title = f'perfdata_{refprefix}_instance_{group.lower()}'
+
+                headers.append('timestamp')
+                headers.append('interval')
+                if self._consolidate:
+                    headers.append('consolidated')
+                    
+                preheaders_before_counters = [None] * len(headers)
+
+                consolidate_counters = set()
+                for counter in counters:
+                    headers.append(get_counter_fullname(counter))
+                    if self._consolidate and counter.rollupType == 'average' and not any(get_counter_fullname(counter) == f"{counter.groupInfo.key}.{counter.nameInfo.key}:maximum" for counter in counters):
+                        consolidate_counters.add(counter)
+                        headers.append(f"{counter.groupInfo.key}.{counter.nameInfo.key}:max")
+
+                with out_table(out, title=title, dir=self._vcenter.out_dir, env=self._vcenter.env) as table:
+                    if counter_details:
+                        preheaders_before_counters[0] = '(counter_key)'
+                        row = preheaders_before_counters + [counter if isinstance(counter, int) else counter.key for counter in counters]
+                        table.append(row)
+
+                        preheaders_before_counters[0] = '(rollup_type)'
+                        row = preheaders_before_counters + [None if isinstance(counter, int) else counter.rollupType for counter in counters]
+                        table.append(row)
+
+                        preheaders_before_counters[0] = '(stats_type)'
+                        row = preheaders_before_counters + [None if isinstance(counter, int) else counter.statsType for counter in counters]
+                        table.append(row)
+
+                        preheaders_before_counters[0] = '(unit)'
+                        row = preheaders_before_counters + [None if isinstance(counter, int) else ("ratio(percent)" if counter.unitInfo.key == "percent" and translate_percent else counter.unitInfo.key) for counter in counters]
+                        table.append(row)
+
+                        preheaders_before_counters[0] = '(label)'
+                        row = preheaders_before_counters + [None if isinstance(counter, int) else counter.nameInfo.label for counter in counters]
+                        table.append(row)
+
+                        preheaders_before_counters[0] = '(summary)'
+                        row = preheaders_before_counters + [None if isinstance(counter, int) else counter.nameInfo.summary for counter in counters]
+                        table.append(row)
+
+                    table.append(headers)
+
+                    for obj, obj_rows in self._rows[refprefix].items():
+                        for instance in obj_rows.keys() if group else ['']:
+                            group_rows = obj_rows.get(instance)
+                            if group_rows:
+                                timestamp_rows = group_rows.get(group)
+                                if timestamp_rows:
+                                    for timestamp in sorted(timestamp_rows.keys(), reverse=True):
+                                        interval_rows = timestamp_rows[timestamp]
+                                        for interval, row in interval_rows.items():
+                                            # Prepare output row
+                                            outrow = [get_obj_name(obj, use_cache=True)]
+                                            if with_entity_ref:
+                                                outrow.append(get_obj_ref(obj))
+                                                
+                                            if group != '':
+                                                outrow.append(instance)
+
+                                            outrow.append(timestamp)
+                                            outrow.append(interval)
+                                    
+                                            if self._consolidate:
+                                                outrow.append(row.values_count)
+                                            
+                                            for counter in counters:
+                                                value = row.get_value_by_counter(counter, translate_percent)
+                                                outrow.append(value)
+                                                                            
+                                                if self._consolidate and counter.rollupType == 'average' and counter in consolidate_counters:
+                                                    value = row.get_maximum_value_by_counter(counter, translate_percent)
+                                                    outrow.append(value)
+
+                                            table.append(outrow)
+    
+        if _logger.isEnabledFor(logging.DEBUG):
+            _logger.debug(f"export: done ({(time_ns() - t0)/10**6:,.1f} ms)")
+
+
+class PerfResultRow:
+    def __init__(self, entity: vim.ManagedEntity, instance: str, timestamp: datetime, interval: int):
+        self.entity = entity
+        self.instance = instance
+        self.timestamp = timestamp
+        self.interval = interval
+        self._values_by_counter_key: dict[int,dict[datetime,int]] = {}
+
+    def add_value(self, counter_key: int, actual_timestamp: int, value: int):
+        values = self._values_by_counter_key.get(counter_key)
+        if values is None:
+            values = {}
+            self._values_by_counter_key[counter_key] = values
+        values[actual_timestamp] = value
+
+    @property
+    def values_count(self):
+        values_count_min = None
+        for values in self._values_by_counter_key.values():
+            if values_count_min is None or len(values) < values_count_min:
+                values_count_min = len(values)
+        return values_count_min
+    
+    def _convert_value(self, value: int|float, translate_percent: bool):
+        if not isinstance(value, int):
+            value = int(value)
+
+        if translate_percent:
+            if translate_percent == 100:
+                return value / 100
+            else:
+                return value / 10000
+            
+        return value
+
+    def get_value_by_counter(self, counter: vim.PerformanceManager.CounterInfo|int, translate_percent: bool):
+        values_by_timestamp = self._values_by_counter_key.get(counter if isinstance(counter, int) else counter.key)
+        if values_by_timestamp is None or len(values_by_timestamp) == 0:
+            return None
+
+        translate_percent = translate_percent if is_percent_counter(counter) else False
+        if len(values_by_timestamp) == 1:
+            return self._convert_value(list(values_by_timestamp.values())[0], translate_percent)
+        
+        values = values_by_timestamp.values()
+        if isinstance(counter, int) or counter.rollupType == 'average' or counter.rollupType == 'none':
+            average = sum(values) / len(values)
+            return self._convert_value(average, translate_percent)
+        elif counter.rollupType == 'summation':
+            return self._convert_value(sum(values), translate_percent)
+        elif counter.rollupType == 'maximum':
+            return self._convert_value(max(values), translate_percent)
+        elif counter.rollupType == 'minimum':
+            return self._convert_value(max(values), translate_percent)
+        else: # latest
+            latest_timestamp = max(values_by_timestamp.keys())
+            return self._convert_value(values_by_timestamp[latest_timestamp], translate_percent)
+
+    def get_maximum_value_by_counter(self, counter: vim.PerformanceManager.CounterInfo|int, translate_percent: bool):
+        values_by_timestamp = self._values_by_counter_key.get(counter if isinstance(counter, int) else counter.key)
+        if values_by_timestamp is None or len(values_by_timestamp) == 0:
+            return None
+        
+        translate_percent = translate_percent if is_percent_counter(counter) else False
+        return self._convert_value(max(values_by_timestamp.values()), translate_percent)
+    
+
+def get_counter_fullname(counter: vim.PerformanceManager.CounterInfo):
+    if isinstance(counter, int):
+        return f'!unknown.{counter}'
+    return f'{counter.groupInfo.key}.{counter.nameInfo.key}:{counter.rollupType}'
+    
+
+def is_percent_counter(counter: vim.PerformanceManager.CounterInfo):
+    if isinstance(counter, int):
+        return False
+    return counter.unitInfo.key == 'percent'

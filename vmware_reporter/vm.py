@@ -7,47 +7,55 @@ import json
 import logging
 import os
 import re
-from argparse import ArgumentParser, RawTextHelpFormatter, _SubParsersAction
+from argparse import ArgumentParser
 from datetime import datetime
 from io import IOBase
 from ipaddress import IPv4Address, IPv6Address, ip_address
 from pathlib import Path
-from typing import Any, Callable, Literal
 from time import sleep
+from typing import Any, Callable, Literal
 
 from pyVmomi import vim
-from zut import (Header, add_func_command, get_description_text, get_help_text,
-                 gigi_bytes, out_table, slugify)
+from zut import Header, add_func_command, gigi_bytes, out_table, slugify
 from zut.excel import ExcelRow, ExcelWorkbook, split_excel_path
 
-from . import (Tag, VCenterClient, dictify_obj, dictify_value, get_obj_name, get_obj_path,
-               get_obj_ref, CONFIG, CONFIG_SECTION)
+from . import (CONFIG, CONFIG_SECTION, Tag, VCenterClient, dictify_obj,
+               dictify_value, get_obj_name, get_obj_path, get_obj_ref)
+from .settings import OUT
+from .pool import get_cached_pool_info
 
-logger = logging.getLogger(__name__)
+_logger = logging.getLogger(__name__)
 
-_DEFAULT_OUT = '{title}.csv'
 
-def add_vm_commands(commands_subparsers: _SubParsersAction[ArgumentParser], *, name: str):
-    parser = commands_subparsers.add_parser(name, help=get_help_text(__doc__), description=get_description_text(__doc__), formatter_class=RawTextHelpFormatter, add_help=False)
+def handle(vcenter: VCenterClient, **kwargs):
+    return vm_list(vcenter, **kwargs)
 
-    group = parser.add_argument_group(title='Command options')
-    group.add_argument('-h', '--help', action='help', help=f"Show this command help message and exit.")
+def _handle_add_arguments(parser: ArgumentParser, for_default_command = False):
+    if for_default_command:
+        parser.add_argument('search', nargs='*', help="Search term(s).")
+    parser.add_argument('-n', '--normalize', action='store_true', help="Normalise search term(s).")
+    parser.add_argument('-k', '--key', choices=['name', 'ref'], default='name', help="Search key (default: %(default)s).")
+    parser.add_argument('-o', '--out', default=OUT, help="Output table (default: %(default)s).")
 
-    subparsers = parser.add_subparsers(title='Sub commands')
-    add_func_command(subparsers, list_vms, name='list')
-    add_func_command(subparsers, list_vm_disks, name='disks')
-    add_func_command(subparsers, list_vm_nics, name='nics')
-    
+    if for_default_command:
+        return
+        
+    subparsers = parser.add_subparsers(title='sub commands')
+    add_func_command(subparsers, vm_list, name='list')
+    add_func_command(subparsers, vm_disks, name='disks')
+    add_func_command(subparsers, vm_nics, name='nics')
     # Operations
-    add_func_command(subparsers, start_vms, name='start')
-    add_func_command(subparsers, stop_vms, name='stop')
-    add_func_command(subparsers, suspend_vms, name='suspend')    
-    add_func_command(subparsers, reconfigure_vms, name='reconfigure')
+    add_func_command(subparsers, vm_start, name='start')
+    add_func_command(subparsers, vm_stop, name='stop')
+    add_func_command(subparsers, vm_suspend, name='suspend')
+    add_func_command(subparsers, vm_reconfigure, name='reconfigure')
+
+handle.add_arguments = _handle_add_arguments
 
 
 #region List
 
-def list_vms(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern = None, *, normalize: bool = False, key: str = 'name', out: os.PathLike|IOBase = _DEFAULT_OUT):
+def vm_list(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern = None, *, normalize: bool = False, key: str = 'name', out: os.PathLike|IOBase = OUT):
     extract_categories = CONFIG.getlist(CONFIG_SECTION, 'extract_categories', delimiter=',')
     extract_custom_values = CONFIG.getlist(CONFIG_SECTION, 'extract_custom_values', delimiter=',')
 
@@ -58,9 +66,13 @@ def list_vms(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern
         'config_status',
         'template',
         # Config
-        'vcpu',
-        'cores_per_socket',
-        Header('memory', fmt='gib'),
+        'cpu_cores',
+        'cpu_cores_per_socket',
+        'cpu_mhz',
+        'cpu_max_mhz',
+        'cpu_reservation_mhz',
+        'mem_mib',
+        'mem_reservation_mib',
         Header('disk_capacity', fmt='gib'),
         Header('disk_freespace', fmt='gib'),
         'disk_count',
@@ -83,14 +95,13 @@ def list_vms(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern
         'other_custom_values' if extract_custom_values else 'custom_values',
         'annotation',
         'create_date',
-        'change_date',
         # Config details
         'hostname',
         'network',
         'disk',
         # ResourcePool / runtime
         'cluster',
-        'resourcepool',
+        'pool',
         'host',
         'power_state',
         'paused',
@@ -107,31 +118,82 @@ def list_vms(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern
         'tools_version_number',
         'tools_version',
         'guestinfo_publish_time',
+        # Performance info
+        'perf_realtime_refresh_rate',
+        # Quick stats, see: https://developer.broadcom.com/xapis/virtual-infrastructure-json-api/latest/data-structures/VirtualMachineQuickStats/
+        # Not available for templates and powered-off VMs
+        # TODO: verify 'cpu_ready_pct' is actually percentages
+        'cpu_demand_mhz', # overallCpuDemand
+        'cpu_ready_pct', # overallCpuReadiness: Percentage of time that the virtual machine was ready, but could not get scheduled to run on the physical CPU.
+        'cpu_usage_mhz', # overallCpuUsage
+        'cpu_entitled_mhz', # distributedCpuEntitlement = This is the amount of CPU resource, in MHz, that this VM is entitled to, as calculated by DRS.
+        'cpu_static_entitlement_mhz', # staticCpuEntitlement = The static CPU resource entitlement for a virtual machine (doesn't take into account current usage = worst case allocation for this virtual machine, if all VMs went to maximum consumption).
+        'mem_guest_usage_mib', # guestMemoryUsage = also known as active guest memory
+        'mem_host_usage_mib',  # hostMemoryUsage = also known as consumed host memory
+        'mem_granted_mib', # grantedMemory = Amount of host physical memory that is mapped for a virtual machine, in MB.
+        'mem_private_mib', # privateMemory = The portion of memory that is granted to this VM from non-shared host memory.
+        'mem_shared_mib', # sharedMemory = The portion of memory that is granted to this VM from host memory that is shared between VMs.
+        'mem_active_mib', # activeMemory = The amount of memory that was recently touched by the VM.
+        'mem_consumed_overhead_mib', # consumedOverheadMemory = The amount of consumed overhead memory for this VM.
+        'mem_swapped_mib',  # swappedMemory = The portion of memory that is granted to this VM from the host's swap space. This is a sign that there is memory pressure on the host.
+        'mem_ballooned_mib', # balloonedMemory = The size of the balloon driver. The host will inflate the balloon driver to reclaim physical memory from the VM. This is a sign that there is memory pressure on the host.
+        'mem_compressed_mib', # compressedMemory = The amount of compressed memory currently consumed by VM.
+        'mem_entitled_mib', # distributedMemoryEntitlement = This is the amount of memory that this VM is entitled to, as calculated by DRS.
+        'mem_static_entitlement_mib', # staticMemoryEntitlement = The static memory resource entitlement for a virtual machine (doesn't take into account current usage = worst case allocation for this virtual machine, if all VMs went to maximum consumption).
     ]
 
-    with out_table(out, title='vms', dir=vcenter.out_dir, env=vcenter.env, headers=headers, after1970=True) as t:
-        for obj in vcenter.iter_objs(vim.VirtualMachine, search, normalize=normalize, key=key):  
-            try:
-                logger.info(f"Analyze vm {obj.name}")
+    objs = vcenter.get_objs(vim.VirtualMachine, search, normalize=normalize, key=key)
+    objs_count = len(objs)
 
-                disks = extract_disks(obj)
-                nics = extract_nics(obj, vcenter=vcenter)
-                extra_config = dictify_value(obj.config.extraConfig) if obj.config is not None else {}
+    perf_manager = vcenter.service_content.perfManager
+
+    with out_table(out, title='vm', dir=vcenter.out_dir, env=vcenter.env, headers=headers, after1970=True) as t:
+        for i, obj in enumerate(objs):
+            name = get_obj_name(obj)
+            ref = get_obj_ref(obj)
+
+            try:
+                _logger.info(f"Analyze vm {i+1:,}/{objs_count:,} ({100 * (i+1)/objs_count:.0f}%): {name} ({ref})")
+
+                summary = obj.summary
+                config_summary = summary.config
+                quickstats = summary.quickStats
+                quickstats_available = quickstats.overallCpuReadiness != -1
+
+                config = obj.config
+                guest = obj.guest
+                runtime = obj.runtime
+                host = runtime.host
+                        
+                if obj.resourcePool: # not for templates
+                    cluster_name, cpu_per_core, pool_path = get_cached_pool_info(obj.resourcePool) # ~ 5.2 ms
+                else:
+                    cluster_name = None
+                    cpu_per_core = None
+                    pool_path = None
+
+                disks = extract_vm_disks(obj)
+                nics = extract_vm_nics(obj, vcenter=vcenter)
+                extra_config = dictify_value(config.extraConfig) if config is not None else {}
 
                 row = [
                     obj.name,
                     get_obj_ref(obj),
                     obj.overallStatus,
                     obj.configStatus,
-                    obj.config.template if obj.config is not None else None,
+                    config_summary.template if config_summary is not None else None,
                     # Config
-                    obj.config.hardware.numCPU if obj.config is not None else None,
-                    obj.config.hardware.numCoresPerSocket if obj.config is not None else None,
-                    obj.config.hardware.memoryMB * 1024 * 1024 if obj.config is not None else None,
+                    config_summary.numCpu if config_summary is not None else None,
+                    config.hardware.numCoresPerSocket if config is not None else None,
+                    config_summary.numCpu * cpu_per_core if config_summary is not None and cpu_per_core is not None else None, # cpu_mhz,
+                    runtime.maxCpuUsage if runtime is not None else None, # cpu_max_mhz - NOTE: sometimes empty, 0 or lower than 'cpu_mhz' (for a few VMs, not only templates)
+                    config_summary.cpuReservation if config_summary is not None else None,
+                    config_summary.memorySizeMB if config_summary is not None else None,
+                    config_summary.memoryReservation if config_summary is not None else None,
                     disks.capacity if disks is not None else None,
                     disks.freespace if disks is not None else None,
-                    obj.summary.config.numVirtualDisks,
-                    obj.summary.config.numEthernetCards,
+                    config_summary.numVirtualDisks,
+                    config_summary.numEthernetCards,
                     # Dossier / rangement
                     get_obj_path(obj.parent),
                 ]
@@ -154,49 +216,69 @@ def list_vms(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern
                     row.append(custom_values.pop(cv, None))
                 other_custom_values = ' | '.join(f"{key}: {value}" for key, value in custom_values.items())
 
+                # Perf
+                perf_provider_summary = perf_manager.QueryProviderSummary(obj)
+                perf_realtime_refresh_rate = perf_provider_summary.refreshRate if perf_provider_summary.currentSupported else None
+
                 row += [
                     other_custom_values,
-                    obj.config.annotation if obj.config is not None else None,
-                    obj.config.createDate if obj.config is not None else None,
-                    datetime.fromisoformat(obj.config.changeVersion) if obj.config is not None else None,
+                    config_summary.annotation if config_summary is not None else None,
+                    config.createDate if config is not None else None,
                     # Config details
-                    obj.guest.hostName,
+                    guest.hostName,
                     nics.to_summary(ip_version=4) if nics is not None else None,
                     disks.to_summary() if disks is not None else None,
                     # ResourcePool / runtime
-                    obj.resourcePool.owner.name if obj.resourcePool else None,
-                    get_obj_name(obj.resourcePool),
-                    obj.runtime.host.name if obj.runtime.host is not None else None,
-                    obj.runtime.powerState,
-                    obj.runtime.paused,
-                    obj.runtime.connectionState,
-                    obj.runtime.bootTime,
-                    obj.config.version if obj.config is not None else None,
+                    cluster_name,
+                    pool_path,
+                    host.name if host is not None else None,
+                    runtime.powerState,
+                    runtime.paused,
+                    runtime.connectionState,
+                    runtime.bootTime,
+                    config.version if config is not None else None,
                     # Guest info
-                    get_os_family(extra_config, obj.config.guestFullName) if obj.config is not None else None,
+                    get_os_family(extra_config, config_summary.guestFullName) if config_summary is not None else None,
                     get_os_version(extra_config),
                     get_os_distro_version(extra_config),
                     get_os_kernel_version(extra_config),
-                    obj.guest.toolsStatus,  # nominal: toolsOk
-                    obj.guest.toolsRunningStatus,  # nominal: guestToolsRunning
-                    get_tools_version_number(obj.guest.toolsVersion),  # version number
-                    get_tools_version(extra_config, obj.guest.toolsVersion),      
+                    guest.toolsStatus,  # nominal: toolsOk
+                    guest.toolsRunningStatus,  # nominal: guestToolsRunning
+                    get_tools_version_number(guest.toolsVersion),  # version number
+                    get_tools_version(extra_config, guest.toolsVersion),      
                     get_guestinfo_publish_time(extra_config),
+                    # Perf
+                    perf_realtime_refresh_rate,
+                    # Quick stats
+                    quickstats.overallCpuDemand if quickstats_available else None,
+                    quickstats.overallCpuReadiness if quickstats_available else None,
+                    quickstats.overallCpuUsage if quickstats_available else None,
+                    quickstats.distributedCpuEntitlement if quickstats_available else None,
+                    quickstats.staticCpuEntitlement if quickstats_available else None,
+                    quickstats.guestMemoryUsage if quickstats_available else None,
+                    quickstats.hostMemoryUsage if quickstats_available else None,
+                    quickstats.grantedMemory if quickstats_available else None,
+                    quickstats.privateMemory if quickstats_available else None,
+                    quickstats.sharedMemory if quickstats_available else None,
+                    quickstats.activeMemory if quickstats_available else None,
+                    quickstats.consumedOverheadMemory if quickstats_available else None,
+                    quickstats.swappedMemory if quickstats_available else None,
+                    quickstats.balloonedMemory if quickstats_available else None,
+                    quickstats.compressedMemory if quickstats_available else None,
+                    quickstats.distributedMemoryEntitlement if quickstats_available else None,
+                    quickstats.staticMemoryEntitlement if quickstats_available else None,
                 ]
                 
                 t.append(row)
             
-            except Exception as err:
-                logger.exception(f"Error while analyzing {obj}: {err}")
+            except:
+                _logger.exception(f"Error while analyzing host {name} ({ref})")
 
 
 def _add_arguments(parser: ArgumentParser):
-    parser.add_argument('search', nargs='*', help="Search term(s).")
-    parser.add_argument('-n', '--normalize', action='store_true', help="Normalise search term(s).")
-    parser.add_argument('-k', '--key', choices=['name', 'ref'], default='name', help="Search key (default: %(default)s).")
-    parser.add_argument('-o', '--out', default=_DEFAULT_OUT, help="Output table (default: %(default)s).")
+    _handle_add_arguments(parser, for_default_command=True)
 
-list_vms.add_arguments = _add_arguments
+vm_list.add_arguments = _add_arguments
 
 #endregion
 
@@ -206,7 +288,7 @@ list_vms.add_arguments = _add_arguments
 _DEFAULT_START_BATCH = 10
 _DEFAULT_BATCH_PAUSE = 60.0
 
-def start_vms(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern = None, *, normalize: bool = False, key: str = 'name', batch: int = _DEFAULT_START_BATCH, batch_pause: float = _DEFAULT_BATCH_PAUSE):
+def vm_start(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern = None, *, normalize: bool = False, key: str = 'name', batch: int = _DEFAULT_START_BATCH, batch_pause: float = _DEFAULT_BATCH_PAUSE, **ignore):
     _invoke_and_track('PowerOn', 'poweredOn', vcenter, search, normalize=normalize, key=key, batch=batch, batch_pause=batch_pause)
 
 def _add_arguments(parser: ArgumentParser):
@@ -216,10 +298,10 @@ def _add_arguments(parser: ArgumentParser):
     parser.add_argument('-b', '--batch', type=int, default=_DEFAULT_START_BATCH, help="Batch size: maximum number of VMs to start at the same time (default: %(default)s).")
     parser.add_argument('--batch-pause', type=float, default=_DEFAULT_BATCH_PAUSE, help="Batch pause: duration of pauses between batchs, in seconds (default: %(default)s).")
 
-start_vms.add_arguments = _add_arguments
+vm_start.add_arguments = _add_arguments
 
 
-def stop_vms(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern = None, *, normalize: bool = False, key: str = 'name', force: bool = False):
+def vm_stop(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern = None, *, normalize: bool = False, key: str = 'name', force: bool = False, **ignore):
     if force:
         _invoke_and_track('PowerOff', 'poweredOff', vcenter, search, normalize=normalize, key=key)
     else:
@@ -231,10 +313,10 @@ def _add_arguments(parser: ArgumentParser):
     parser.add_argument('-k', '--key', choices=['name', 'ref'], default='name', help="Search key (default: %(default)s).")
     parser.add_argument('-f', '--force', action='store_true', help="Force operation.")
 
-stop_vms.add_arguments = _add_arguments
+vm_stop.add_arguments = _add_arguments
 
 
-def suspend_vms(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern = None, *, normalize: bool = False, key: str = 'name', force: bool = False):
+def vm_suspend(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern = None, *, normalize: bool = False, key: str = 'name', force: bool = False, **ignore):
     if force:
         _invoke_and_track('Suspend', 'suspended', vcenter, search, normalize=normalize, key=key)
     else:
@@ -246,7 +328,7 @@ def _add_arguments(parser: ArgumentParser):
     parser.add_argument('-k', '--key', choices=['name', 'ref'], default='name', help="Search key (default: %(default)s).")
     parser.add_argument('-f', '--force', action='store_true', help="Force operation.")
 
-suspend_vms.add_arguments = _add_arguments
+vm_suspend.add_arguments = _add_arguments
 
 
 def _invoke_and_track(op: str, target_status: str, vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern = None, *, normalize: bool = False, key: str = 'name', batch: int = None, batch_pause: float = _DEFAULT_BATCH_PAUSE):
@@ -269,11 +351,11 @@ def _invoke_and_track(op: str, target_status: str, vcenter: VCenterClient, searc
     loop_objs: dict[vim.VirtualMachine,ReportHelper] = {}
     for i, vm in enumerate(vcenter.iter_objs(vim.VirtualMachine, search, normalize=normalize, key=key)):
         if batch is not None and i > 0 and i % batch == 0:
-            logger.info(f"Handled {i} VMs, wait for {batch_pause} seconds")
+            _logger.info(f"Handled {i} VMs, wait for {batch_pause} seconds")
             sleep(batch_pause)
 
         log_prefix = f"{vm.name} ({get_obj_ref(vm)})"
-        logger.info(f"{op} {log_prefix}...")
+        _logger.info(f"{op} {log_prefix}...")
         func = getattr(vm, op)
         helper = ReportHelper(log_prefix=log_prefix)
         try:
@@ -297,7 +379,7 @@ def _invoke_and_track(op: str, target_status: str, vcenter: VCenterClient, searc
     remaining_seconds = total_seconds
     while len(loop_objs) > 0 and remaining_seconds > 0:
         if remaining_seconds % 10 == 0:
-            logger.info("Wait %s entities to reach status %s (%s seconds max)", len(loop_objs), target_status, remaining_seconds)
+            _logger.info("Wait %s entities to reach status %s (%s seconds max)", len(loop_objs), target_status, remaining_seconds)
         sleep(1)
 
         vms_to_remove = []
@@ -315,10 +397,10 @@ def _invoke_and_track(op: str, target_status: str, vcenter: VCenterClient, searc
         helper.error(f"VM still not {target_status} after {total_seconds} seconds")
 
 
-DEFAULT_RECONFIGURE_FILE = 'vms_reconfigure.xlsx'
-DEFAULT_RECONFIGURE_TABLE = 'vms'
+DEFAULT_RECONFIGURE_FILE = 'vm_reconfigure.xlsx'
+DEFAULT_RECONFIGURE_TABLE = 'vm'
 
-def reconfigure_vms(vcenter: VCenterClient, path: str|Path = DEFAULT_RECONFIGURE_FILE, top: int = None, ignore_invalid_current: bool = False):
+def vm_reconfigure(vcenter: VCenterClient, path: str|Path = DEFAULT_RECONFIGURE_FILE, top: int = None, ignore_invalid_current: bool = False, **ignore):
     """
     Reconfigure VMs (vcpu, memory, annotation, custom fields) as a mass operation, using an Excel file.
     """
@@ -376,13 +458,13 @@ def reconfigure_vms(vcenter: VCenterClient, path: str|Path = DEFAULT_RECONFIGURE
         if search_by_ref:
             if row['ref']:
                 if row.get('status') == 'IGNORE':
-                    logger.info(f"Ignore {row['ref']}")
+                    _logger.info(f"Ignore {row['ref']}")
                     continue
                 helpers[row['ref']] = ReportHelper(row=row)
         else:
             if row['name']:
                 if row.get('status') == 'IGNORE':
-                    logger.info(f"Ignore {row['name']}")
+                    _logger.info(f"Ignore {row['name']}")
                     continue
                 helpers[slugify(row['name'])] = ReportHelper(row=row)
         row['status'] = None
@@ -391,7 +473,7 @@ def reconfigure_vms(vcenter: VCenterClient, path: str|Path = DEFAULT_RECONFIGURE
     n = 0
     for vm in vcenter.iter_objs(vim.VirtualMachine):
         if top is not None and n == top:
-            logger.warning(f"Stop after {n} VMs")
+            _logger.warning(f"Stop after {n} VMs")
             break
 
         key = get_obj_ref(vm) if search_by_ref else slugify(vm.name)
@@ -400,12 +482,12 @@ def reconfigure_vms(vcenter: VCenterClient, path: str|Path = DEFAULT_RECONFIGURE
             continue
         
         if helper.found:
-            logger.error(f"VM {vm.name}: ignore (several VMs with key \"{key}\")")
+            _logger.error(f"VM {vm.name}: ignore (several VMs with key \"{key}\")")
             continue
         helper.found = True
 
         n += 1        
-        logger.info(f"Handle {vm.name} ({get_obj_ref(vm)})")
+        _logger.info(f"Handle {vm.name} ({get_obj_ref(vm)})")
         row = helper.row
 
         try:
@@ -462,13 +544,13 @@ def reconfigure_vms(vcenter: VCenterClient, path: str|Path = DEFAULT_RECONFIGURE
 
             # Perform the reconfiguration
             if config_targets_reconfigure:
-                logger.debug("Reconfigure VM: %s", config_targets_reconfigure)
+                _logger.debug("Reconfigure VM: %s", config_targets_reconfigure)
                 configspec = vim.vm.ConfigSpec(**config_targets_reconfigure, changeVersion=change_version)
                 task = vm.ReconfigVM_Task(configspec)
                 vcenter.wait_for_task(task)
 
             for key, value in config_targets_customfields.items():
-                logger.debug("Set custom field %s: %s", key, value)
+                _logger.debug("Set custom field %s: %s", key, value)
                 vcenter.service_content.customFieldsManager.SetField(vm, key, value)
 
             # Verification
@@ -494,7 +576,7 @@ def reconfigure_vms(vcenter: VCenterClient, path: str|Path = DEFAULT_RECONFIGURE
                 helper.error(details)
         
         except Exception as err:
-            logger.exception(str(err))
+            _logger.exception(str(err))
             row['status'] = type(err).__name__
             row['details'] = str(err)
 
@@ -511,7 +593,7 @@ def _add_arguments(parser: ArgumentParser):
     parser.add_argument('--top', type=int)
     parser.add_argument('--ignore-invalid-current', action='store_true')
 
-reconfigure_vms.add_arguments = _add_arguments
+vm_reconfigure.add_arguments = _add_arguments
 
 
 class ReportHelper:
@@ -521,13 +603,13 @@ class ReportHelper:
         self.found = found
 
     def success(self, details: str = None):
-        logger.info((f"{self.log_prefix }: " if self.log_prefix else '') + f"SUCCESS{f': {details}' if details else ''}")
+        _logger.info((f"{self.log_prefix }: " if self.log_prefix else '') + f"SUCCESS{f': {details}' if details else ''}")
         if self.row:
             self.row['status'] = 'SUCCESS'
             self.row['details'] = details
 
     def error(self, details: str):
-        logger.error((f"{self.log_prefix }: " if self.log_prefix else '') + f"{details}")
+        _logger.error((f"{self.log_prefix }: " if self.log_prefix else '') + f"{details}")
         if self.row:
             self.row['status'] = 'ERROR'
             self.row['details'] = details
@@ -537,7 +619,7 @@ class ReportHelper:
 
 #region Disks
 
-def list_vm_disks(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern = None, *, normalize: bool = False, key: str = 'name', out: str = _DEFAULT_OUT, top: int = None):
+def vm_disks(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern = None, *, normalize: bool = False, key: str = 'name', out: str = OUT, top: int = None, **ignore):
     """
     Analyze VM disks.
     """
@@ -588,9 +670,9 @@ def list_vm_disks(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pa
                 break
             
             try:
-                logger.info(f"Analyze vm {vm.name} disks")
+                _logger.info(f"Analyze vm {vm.name} disks")
 
-                info = extract_disks(vm)
+                info = extract_vm_disks(vm)
 
                 mapped_guests: list[vim.vm.GuestInfo.DiskInfo] = []
                 if info is not None:
@@ -686,7 +768,7 @@ def list_vm_disks(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pa
                         ])
 
             except Exception as err:
-                logger.exception(f"Error while analyzing {str(vm)} disks: {err}")
+                _logger.exception(f"Error while analyzing {str(vm)} disks: {err}")
 
 
 def _add_arguments(parser: ArgumentParser):
@@ -694,13 +776,14 @@ def _add_arguments(parser: ArgumentParser):
     parser.add_argument('-n', '--normalize', action='store_true', help="Normalise search term(s).")
     parser.add_argument('-k', '--key', choices=['name', 'ref'], default='name', help="Search key (default: %(default)s).")
     parser.add_argument('--top', type=int)
-    parser.add_argument('-o', '--out', default=_DEFAULT_OUT, help="Output Excel or CSV file (default: %(default)s).")
+    parser.add_argument('-o', '--out', default=OUT, help="Output Excel or CSV file (default: %(default)s).")
 
-list_vm_disks.add_arguments = _add_arguments
+vm_disks.add_arguments = _add_arguments
 
 
-def extract_disks(vm: vim.VirtualMachine):
-    if vm.config is None:
+def extract_vm_disks(vm: vim.VirtualMachine):
+    config = vm.config
+    if config is None:
         # VM is not yet configured
         return None
     
@@ -709,7 +792,7 @@ def extract_disks(vm: vim.VirtualMachine):
     # Retrieve disk devices
     disks_per_key: dict[int,VmDisk] = {}
     keys_to_ignore = set()
-    for obj in vm.config.hardware.device:
+    for obj in config.hardware.device:
         if not isinstance(obj, vim.vm.device.VirtualDisk):
             continue
 
@@ -849,7 +932,7 @@ class VmDisks:
         self.unmapped_guests_freespace: int = 0
 
     def _append_issue(self, message: str):
-        logger.warning(f"{self.vm.name}: {message}")
+        _logger.warning(f"{self.vm.name}: {message}")
         self.issues.append(message)
 
     def _identify_ignored_guests(self):
@@ -1008,7 +1091,7 @@ class VmDisk:
 
 #region NICs
 
-def list_vm_nics(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern = None, *, normalize: bool = False, key: str = 'name', out: str = _DEFAULT_OUT, top: int = None):
+def vm_nics(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern = None, *, normalize: bool = False, key: str = 'name', out: str = OUT, top: int = None, **ignore):
     """
     Analyze VM network interfaces.
     """
@@ -1043,9 +1126,9 @@ def list_vm_nics(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pat
                 break
             
             try:
-                logger.info(f"Analyze vm {vm.name} nics")
+                _logger.info(f"Analyze vm {vm.name} nics")
 
-                info = extract_nics(vm, vcenter=vcenter)
+                info = extract_vm_nics(vm, vcenter=vcenter)
 
                 mapped_guests: list[vim.vm.GuestInfo.NicInfo] = []
                 if info is not None:
@@ -1134,7 +1217,7 @@ def list_vm_nics(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pat
                         ])
 
             except Exception as err:
-                logger.exception(f"Error while analyzing {str(vm)} nics: {err}")
+                _logger.exception(f"Error while analyzing {str(vm)} nics: {err}")
 
 
 def _add_arguments(parser: ArgumentParser):
@@ -1142,13 +1225,14 @@ def _add_arguments(parser: ArgumentParser):
     parser.add_argument('-n', '--normalize', action='store_true', help="Normalise search term(s).")
     parser.add_argument('-k', '--key', choices=['name', 'ref'], default='name', help="Search key (default: %(default)s).")
     parser.add_argument('--top', type=int)
-    parser.add_argument('-o', '--out', default=_DEFAULT_OUT, help="Output Excel or CSV file (default: %(default)s).")
+    parser.add_argument('-o', '--out', default=OUT, help="Output Excel or CSV file (default: %(default)s).")
 
-list_vm_nics.add_arguments = _add_arguments
+vm_nics.add_arguments = _add_arguments
 
 
-def extract_nics(vm: vim.VirtualMachine, *, vcenter: VCenterClient):
-    if vm.config is None:
+def extract_vm_nics(vm: vim.VirtualMachine, *, vcenter: VCenterClient):
+    config = vm.config
+    if config is None:
         # VM is not yet configured
         return None
     
@@ -1157,7 +1241,7 @@ def extract_nics(vm: vim.VirtualMachine, *, vcenter: VCenterClient):
     # Retrieve nic devices
     nics_per_key: dict[int,VmNic] = {}
     keys_to_ignore = set()
-    for obj in vm.config.hardware.device:
+    for obj in config.hardware.device:
         if not isinstance(obj, vim.vm.device.VirtualEthernetCard):
             continue
 
@@ -1207,7 +1291,7 @@ class VmNics:
         self.issues: list[str] = []
 
     def _append_issue(self, message: str):
-        logger.warning(f"{self.vm.name}: {message}")
+        _logger.warning(f"{self.vm.name}: {message}")
         self.issues.append(message)
 
     @property
@@ -1400,7 +1484,6 @@ def get_os_family(extra_config: dict, configured_fullname: str):
 
     if configured_fullname:
         return get_family_from_configured(configured_fullname)
-
 
 
 def get_os_version(extra_config: dict):
