@@ -3,29 +3,25 @@ Analyze networking.
 """
 from __future__ import annotations
 
+from io import IOBase
+import os
 import re
-from argparse import ArgumentParser, RawTextHelpFormatter, _SubParsersAction
+from argparse import ArgumentParser
 
 from pyVmomi import vim
-from zut import add_func_command, out_table, get_help_text, get_description_text
+from zut import tabular_dumper
 
 from . import VCenterClient, get_obj_ref, get_obj_typename
-from .settings import OUT
+from .settings import TABULAR_OUT, OUT_DIR
 
 
-def add_net_commands(commands_subparsers: _SubParsersAction[ArgumentParser], *, name: str):
-    parser = commands_subparsers.add_parser(name, help=get_help_text(__doc__), description=get_description_text(__doc__), formatter_class=RawTextHelpFormatter, add_help=False)
+def _add_arguments(parser: ArgumentParser):
+    parser.add_argument('-o', '--out', default=TABULAR_OUT, help="Output Excel or CSV file (default: %(default)s).")
+    parser.add_argument('--dir', help=f"Output directory (default: {OUT_DIR}).")
 
-    group = parser.add_argument_group(title='Command options')
-    group.add_argument('-h', '--help', action='help', help=f"Show this command help message and exit.")
-
-    subparsers = parser.add_subparsers(title='Sub commands')
-    add_func_command(subparsers, list_nets, name='list')
-
-
-def list_nets(vcenter: VCenterClient, *, out: str = OUT):
+def dump_nets(vcenter: VCenterClient, *, out: os.PathLike|IOBase = TABULAR_OUT, dir: os.PathLike = None):
     """
-    List switchs (`vim.dvs.DistributedVirtualSwitch` objects) and networks (`vim.Network` and `vim.dvs.DistributedVirtualPortgroup` objects).
+    Dump switchs (`vim.dvs.DistributedVirtualSwitch` objects) and networks (`vim.Network` and `vim.dvs.DistributedVirtualPortgroup` objects).
     """
     switchs_headers = [
         'name',
@@ -37,7 +33,7 @@ def list_nets(vcenter: VCenterClient, *, out: str = OUT):
         'default_vlan',
     ]
 
-    with out_table(out, title='switchs', dir=vcenter.out_dir, env=vcenter.env, headers=switchs_headers) as t:
+    with tabular_dumper(out, title='switch', dir=dir or vcenter.data_dir, scope=vcenter.scope, headers=switchs_headers, truncate=True) as t:
         for obj in vcenter.iter_objs(vim.DistributedVirtualSwitch):
             uplinks = []
             for portgroup in obj.config.uplinkPortgroup:
@@ -65,7 +61,7 @@ def list_nets(vcenter: VCenterClient, *, out: str = OUT):
         'default_vlan',
     ]
 
-    with out_table(out, title='networks', dir=vcenter.out_dir, env=vcenter.env, headers=networks_headers) as t:
+    with tabular_dumper(out, title='network', dir=dir or vcenter.data_dir, scope=vcenter.scope, headers=networks_headers, truncate=True) as t:
         for obj in sorted(vcenter.iter_objs(vim.Network), key=_network_sortkey):
             if isinstance(obj, vim.dvs.DistributedVirtualPortgroup):
                 typename = 'DVP'
@@ -94,11 +90,8 @@ def list_nets(vcenter: VCenterClient, *, out: str = OUT):
                 _vlan_repr(vlan),
             ])
 
-
-def _add_arguments(parser: ArgumentParser):
-    parser.add_argument('-o', '--out', default=OUT, help="Output Excel or CSV file (default: %(default)s).")
-
-list_nets.add_arguments = _add_arguments
+dump_nets.add_arguments = _add_arguments
+handle = dump_nets
 
 
 def _network_sortkey(obj: vim.Network):

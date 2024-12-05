@@ -13,7 +13,7 @@ API reference
     vmware_reporter.cluster
     vmware_reporter.customvalue
     vmware_reporter.datastore
-    vmware_reporter.dump
+    vmware_reporter.export
     vmware_reporter.host
     vmware_reporter.inventory
     vmware_reporter.net

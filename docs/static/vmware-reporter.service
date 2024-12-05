@@ -1,7 +1,7 @@
 [Unit]
-Description=Run vmware-reporter (autoreport)
+Description=Run vmware-reporter (all)
 
 [Service]
 Type=oneshot
 WorkingDirectory=/srv/vmware-reporter
-ExecStart=vmware-reporter autoreport
+ExecStart=vmware-reporter all

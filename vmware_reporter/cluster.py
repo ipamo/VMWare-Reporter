@@ -3,45 +3,51 @@ Analyze clusters and domains (compute resources).
 """
 from __future__ import annotations
 
-from datetime import datetime
 import logging
 import os
 import re
 from argparse import ArgumentParser
+from datetime import datetime
 from io import IOBase
 from time import sleep, time_ns
 
 from pyVmomi import vim
 from tabulate import tabulate
-from zut import Header, out_table, add_func_command, write_live
+from zut import add_command, tabular_dumper, write_live
 
-from . import VCenterClient, dictify_obj, get_obj_name, get_obj_ref, get_obj_typename
-from .settings import OUT
+from . import VCenterClient, get_obj_name, get_obj_ref
+from .settings import TABULAR_OUT, OUT_DIR
 
 _logger = logging.getLogger(__name__)
 
 
-def handle(vcenter: VCenterClient, **kwargs):
-    return cluster_list(vcenter, **kwargs)
-
-def _handle_add_arguments(parser: ArgumentParser, for_default_command = False):
-    if for_default_command:
-        parser.add_argument('search', nargs='*', help="Search term(s).")
+def _add_arguments(parser: ArgumentParser):
     parser.add_argument('-n', '--normalize', action='store_true', help="Normalise search term(s).")
     parser.add_argument('-k', '--key', choices=['name', 'ref'], default='name', help="Search key (default: %(default)s).")
-    parser.add_argument('-o', '--out', default=OUT, help="Output table (default: %(default)s).")
-
-    if for_default_command:
-        return
+    parser.add_argument('-o', '--out', default=TABULAR_OUT, help="Output table (default: %(default)s).")
+    parser.add_argument('--dir', help=f"Output directory (default: {OUT_DIR}).")
         
     subparsers = parser.add_subparsers(title='sub commands')
-    add_func_command(subparsers, cluster_list, name='list')
-    add_func_command(subparsers, cluster_stat, name='stat')
+    add_command(subparsers, dump_clusters, name='.')
+    add_command(subparsers, display_cluster_stats, name='stat')
 
-handle.add_arguments = _handle_add_arguments
+def handle(vcenter: VCenterClient, **kwargs):
+    dump_clusters(vcenter, **kwargs)
+
+handle.add_arguments = _add_arguments
 
 
-def cluster_list(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern = None, *, normalize: bool = False, key: str = 'name', out: os.PathLike|IOBase = OUT):
+def _add_arguments(parser: ArgumentParser):
+    parser.add_argument('search', nargs='*', help="Search term(s).")
+    parser.add_argument('-n', '--normalize', action='store_true', help="Normalise search term(s).")
+    parser.add_argument('-k', '--key', choices=['name', 'ref'], default='name', help="Search key (default: %(default)s).")
+    parser.add_argument('-o', '--out', default=TABULAR_OUT, help="Output table (default: %(default)s).")
+    parser.add_argument('--dir', help=f"Output directory (default: {OUT_DIR}).")
+
+def dump_clusters(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern = None, *, normalize: bool = False, key: str = 'name', out: os.PathLike|IOBase = TABULAR_OUT, dir: os.PathLike = None):
+    """
+    Dump clusters and domains (compute resources).
+    """
     headers = [
         'name',
         'ref',
@@ -74,7 +80,7 @@ def cluster_list(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pat
 
     perf_manager = vcenter.service_content.perfManager
 
-    with out_table(out, title='cluster', dir=vcenter.out_dir, env=vcenter.env, headers=headers) as t:
+    with tabular_dumper(out, title='cluster', dir=dir or vcenter.data_dir, scope=vcenter.scope, headers=headers, truncate=True) as t:
         for i, obj in enumerate(objs):
             name = get_obj_name(obj)
             ref = get_obj_ref(obj)
@@ -120,14 +126,24 @@ def cluster_list(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pat
             except:
                 _logger.exception(f"Error while analyzing host {name} ({ref})")
 
+dump_clusters.add_arguments = _add_arguments
+
+
 def _add_arguments(parser: ArgumentParser):
-    _handle_add_arguments(parser, for_default_command=True)
+    parser.add_argument('search', nargs='*', help="Search term(s).")
+    parser.add_argument('-n', '--normalize', action='store_true', help="Normalise search term(s).")
+    parser.add_argument('-k', '--key', choices=['name', 'ref'], default='name', help="Search key (default: %(default)s).")
+    parser.add_argument('--sleep', type=float, default=1.0, dest='sleep_duration', help="Sleep duration (in seconds) between two invokations.")
+    parser.add_argument('--no-pct', action='store_true', help="Do not display percentages.")
 
-cluster_list.add_arguments = _add_arguments
+    group = parser.add_argument_group('resources')
+    group.add_argument('--cpu', action='append_const', const='cpu', dest='resources', help="CPU.")
+    group.add_argument('--mem', action='append_const', const='mem', dest='resources', help="Memory.")
 
-
-def cluster_stat(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern = None, *, normalize: bool = False, key: str = 'name', no_pct: bool = False, resources: list[str] = None, sleep_duration: float = 1.0, **ignored):
-    print(resources)
+def display_cluster_stats(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern = None, *, normalize: bool = False, key: str = 'name', no_pct: bool = False, resources: list[str] = None, sleep_duration: float = 1.0, **ignored):
+    """
+    Display live stats about clusters and domains (compute resources).
+    """
     objs = sorted(vcenter.get_objs(vim.ClusterComputeResource, search, normalize=normalize, key=key), key=lambda obj: obj.name)
 
     previous_tabtext = None
@@ -228,15 +244,4 @@ def cluster_stat(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pat
         previous_tabtext = tabtext
         sleep(sleep_duration)
 
-def _add_arguments(parser: ArgumentParser):
-    parser.add_argument('search', nargs='*', help="Search term(s).")
-    parser.add_argument('-n', '--normalize', action='store_true', help="Normalise search term(s).")
-    parser.add_argument('-k', '--key', choices=['name', 'ref'], default='name', help="Search key (default: %(default)s).")
-    parser.add_argument('--sleep', type=float, default=1.0, dest='sleep_duration', help="Sleep duration (in seconds) between two invokations.")
-    parser.add_argument('--no-pct', action='store_true', help="Do not display percentages.")
-
-    group = parser.add_argument_group('resources')
-    group.add_argument('--cpu', action='append_const', const='cpu', dest='resources', help="CPU.")
-    group.add_argument('--mem', action='append_const', const='mem', dest='resources', help="Memory.")
-
-cluster_stat.add_arguments = _add_arguments
+display_cluster_stats.add_arguments = _add_arguments

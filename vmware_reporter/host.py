@@ -14,34 +14,39 @@ from typing import Iterable
 
 from pyVmomi import vim
 from tabulate import tabulate
-from zut import add_func_command, out_table, write_live
+from zut import add_command, tabular_dumper, write_live
 
 from . import VCenterClient, dictify_value, get_obj_name, get_obj_ref
-from .settings import OUT
+from .settings import TABULAR_OUT, OUT_DIR
+
 
 _logger = logging.getLogger(__name__)
 
-def handle(vcenter: VCenterClient, **kwargs):
-    return host_list(vcenter, **kwargs)
 
-def _handle_add_arguments(parser: ArgumentParser, for_default_command = False):
-    if for_default_command:
-        parser.add_argument('search', nargs='*', help="Search term(s).")
+def _add_arguments(parser: ArgumentParser):
     parser.add_argument('-n', '--normalize', action='store_true', help="Normalise search term(s).")
     parser.add_argument('-k', '--key', choices=['name', 'ref'], default='name', help="Search key (default: %(default)s).")
-    parser.add_argument('-o', '--out', default=OUT, help="Output table (default: %(default)s).")
-
-    if for_default_command:
-        return
+    parser.add_argument('-o', '--out', default=TABULAR_OUT, help="Output table (default: %(default)s).")
+    parser.add_argument('--dir', help=f"Output directory (default: {OUT_DIR}).")
         
     subparsers = parser.add_subparsers(title='sub commands')
-    add_func_command(subparsers, host_list, name='list')
-    add_func_command(subparsers, host_stat, name='stat')
+    add_command(subparsers, dump_hosts, name='list')
+    add_command(subparsers, display_host_stats, name='stat')
 
-handle.add_arguments = _handle_add_arguments
+def handle(vcenter: VCenterClient, **kwargs):
+    dump_hosts(vcenter, **kwargs)
+
+handle.add_arguments = _add_arguments
 
 
-def host_list(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern = None, *, normalize: bool = False, key: str = 'name', out: os.PathLike|IOBase = OUT):
+def _add_arguments(parser: ArgumentParser):
+    parser.add_argument('search', nargs='*', help="Search term(s).")
+    parser.add_argument('-n', '--normalize', action='store_true', help="Normalise search term(s).")
+    parser.add_argument('-k', '--key', choices=['name', 'ref'], default='name', help="Search key (default: %(default)s).")
+    parser.add_argument('-o', '--out', default=TABULAR_OUT, help="Output table (default: %(default)s).")
+    parser.add_argument('--dir', help=f"Output directory (default: {OUT_DIR}).")
+
+def dump_hosts(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern = None, *, normalize: bool = False, key: str = 'name', out: os.PathLike|IOBase = TABULAR_OUT, dir: os.PathLike = None):
     headers = [
         'name',
         'ref',
@@ -77,7 +82,7 @@ def host_list(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Patter
     objs = vcenter.get_objs(vim.HostSystem, search, normalize=normalize, key=key)
     objs_count = len(objs)
 
-    with out_table(out, title='host', dir=vcenter.out_dir, env=vcenter.env, headers=headers, after1970=True) as t:
+    with tabular_dumper(out, title='host', dir=dir or vcenter.data_dir, scope=vcenter.scope, headers=headers, after1970=True, truncate=True) as t:
         for i, obj in enumerate(objs):
             name = get_obj_name(obj)
             ref = get_obj_ref(obj)
@@ -126,13 +131,22 @@ def host_list(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Patter
             except:
                 _logger.exception(f"Error while analyzing host {name} ({ref})")
 
+dump_hosts.add_arguments = _add_arguments
+
+
 def _add_arguments(parser: ArgumentParser):
-    _handle_add_arguments(parser, for_default_command=True)
+    parser.add_argument('search', nargs='*', help="Search term(s).")
+    parser.add_argument('-n', '--normalize', action='store_true', help="Normalise search term(s).")
+    parser.add_argument('-k', '--key', choices=['name', 'ref'], default='name', help="Search key (default: %(default)s).")
+    parser.add_argument('--sleep', type=float, default=1.0,  dest='sleep_duration', help="Sleep duration (in seconds) between two invokations.")
+    parser.add_argument('--running', action='store_true', help="Only show running hosts.")
+    parser.add_argument('--no-pct', action='store_true', help="Do not display percentages.")
+    
+    group = parser.add_argument_group('resources')
+    group.add_argument('--cpu', action='append_const', const='cpu', dest='resources', help="CPU.")
+    group.add_argument('--mem', action='append_const', const='mem', dest='resources', help="Memory.")
 
-host_list.add_arguments = _add_arguments
-
-
-def host_stat(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern = None, *, normalize: bool = False, key: str = 'name', running: bool = False, no_pct: bool = False, resources: list[str] = None, sleep_duration: float = 1.0, **ignored):    
+def display_host_stats(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern = None, *, normalize: bool = False, key: str = 'name', running: bool = False, no_pct: bool = False, resources: list[str] = None, sleep_duration: float = 1.0, **ignored):    
     objs: Iterable[vim.HostSystem] = sorted(vcenter.get_objs(vim.HostSystem, search, normalize=normalize, key=key), key=lambda obj: (obj.parent.name, obj.name))
 
     previous_tabtext = None
@@ -295,17 +309,5 @@ def host_stat(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Patter
         write_live(text)
         previous_tabtext = tabtext
         sleep(sleep_duration)
-    
-def _add_arguments(parser: ArgumentParser):
-    parser.add_argument('search', nargs='*', help="Search term(s).")
-    parser.add_argument('-n', '--normalize', action='store_true', help="Normalise search term(s).")
-    parser.add_argument('-k', '--key', choices=['name', 'ref'], default='name', help="Search key (default: %(default)s).")
-    parser.add_argument('--sleep', type=float, default=1.0,  dest='sleep_duration', help="Sleep duration (in seconds) between two invokations.")
-    parser.add_argument('--running', action='store_true', help="Only show running hosts.")
-    parser.add_argument('--no-pct', action='store_true', help="Do not display percentages.")
-    
-    group = parser.add_argument_group('resources')
-    group.add_argument('--cpu', action='append_const', const='cpu', dest='resources', help="CPU.")
-    group.add_argument('--mem', action='append_const', const='mem', dest='resources', help="Memory.")
 
-host_stat.add_arguments = _add_arguments
+display_host_stats.add_arguments = _add_arguments

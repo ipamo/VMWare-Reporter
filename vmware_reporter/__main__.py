@@ -3,33 +3,24 @@ Interact easily with your VMWare clusters.
 """
 from __future__ import annotations
 
-import logging
 import os
 from argparse import ArgumentParser, RawTextHelpFormatter, _SubParsersAction
-from configparser import ConfigParser
 from contextlib import nullcontext
 from inspect import signature
 from types import FunctionType
 
-from zut import (OutTable, add_func_command, add_module_command,
-                 configure_logging, exec_command, get_help_text,
-                 register_locale)
+from zut import add_command, configure_logging, exec_command, get_help_text
 
-from . import (VCenterClient, __prog__, __version__, autoreport, cluster,
-               customvalue, host, perf, vm)
-from .datastore import add_datastore_commands
-from .dump import dump
-from .inventory import export_inventory
-from .net import add_net_commands
-from .pool import add_pool_commands
-from .tag import add_tag_commands
+from . import (VCenterClient, __prog__, __version__, cluster,
+               customvalue, datastore, all, host, net, perf, pool, tag, vm)
+from .export import export
+from .inventory import inventory
 
-logger = logging.getLogger(__name__)
 
 def main():
     configure_logging()
-    register_locale(use_excel_csv=(os.environ.get('USE_EXCEL_CSV') or '1').lower() in ['1', 'yes', 'true', 'on'])
-    OutTable.DEFAULT_EXCEL_ATEXIT = (os.environ.get('DEFAULT_EXCEL_ATEXIT') or '1').lower() in ['1', 'yes', 'true', 'on']
+    #TODO? register_locale(use_excel_csv=(os.environ.get('USE_EXCEL_CSV') or '1').lower() in ['1', 'yes', 'true', 'on'])
+    #TODO? OutTable.DEFAULT_EXCEL_ATEXIT = (os.environ.get('DEFAULT_EXCEL_ATEXIT') or '1').lower() in ['1', 'yes', 'true', 'on']
 
     parser = init_parser(__prog__, __version__, __doc__)
 
@@ -39,13 +30,14 @@ def main():
     parse_and_exec_command(parser)
     
 
-def init_parser(prog: str = None, version: str = None, doc: str = None, *, config: ConfigParser = None, section: str = None):
+def init_parser(prog: str = None, version: str = None, doc: str = None):
     parser = ArgumentParser(prog=prog, description=get_help_text(doc), formatter_class=RawTextHelpFormatter, add_help=False, epilog='\n'.join(doc.splitlines()[2:]) if doc else None)
     
-    envs = VCenterClient.get_configured_envs(config=config, section=section)
+    scopes = VCenterClient.get_available_scopes()
 
     group = parser.add_argument_group(title='General options')
-    group.add_argument('-e', '--env', default=os.environ.get('VMWARE_DEFAULT_ENV'), help=f"Name of the vCenter to use. Available: {', '.join(envs) if envs else 'none'}.")
+    group.add_argument('-s', '--scope', default=os.environ.get('VMWARE_DEFAULT_SCOPE'), help=f"VCenter scope to use. Available: {', '.join(scopes) if scopes else 'none'}.")
+    group.add_argument('-x', '--csv-excel', action='store_true', help="Format CSV outputs for easy display with Excel.")
     group.add_argument('-h', '--help', action='help', help=f"Show this program help message and exit.")
     group.add_argument('--version', action='version', version=f"{prog} {version or '?'}", help="Show version information and exit.")
 
@@ -53,27 +45,27 @@ def init_parser(prog: str = None, version: str = None, doc: str = None, *, confi
 
 
 def add_commands(subparsers: _SubParsersAction[ArgumentParser]):
-    add_func_command(subparsers, export_inventory, name='inventory')
-    add_func_command(subparsers, dump, name='dump')
+    add_command(subparsers, all)
 
-    add_module_command(subparsers, cluster)
-    add_pool_commands(subparsers, name='pool')
-    add_datastore_commands(subparsers, name='datastore')
-    add_net_commands(subparsers, name='net')
-    add_module_command(subparsers, host)
-    add_module_command(subparsers, vm)
-    add_func_command(subparsers, customvalue.list_custom_values, name='customvalue')
-    add_tag_commands(subparsers, name='tag')
+    add_command(subparsers, cluster)
+    add_command(subparsers, pool)
+    add_command(subparsers, datastore)
+    add_command(subparsers, net)
+    add_command(subparsers, host)
+    add_command(subparsers, vm)
+    add_command(subparsers, customvalue)
+    add_command(subparsers, tag)
     
-    add_module_command(subparsers, perf)
-
-    add_module_command(subparsers, autoreport)
+    add_command(subparsers, inventory, name='inventory')
+    add_command(subparsers, export, name='export')
+    
+    add_command(subparsers, perf)
         
 
-def get_vcenter(handle: FunctionType, args: dict, *, config: ConfigParser = None, section: str = None):
+def get_vcenter(handle: FunctionType, args: dict):
     if handle and 'vcenter' in signature(handle).parameters:
-        env = args.pop('env', None)
-        vcenter = VCenterClient(env, config=config, section=section)
+        scope = args.pop('scope', None)
+        vcenter = VCenterClient(scope)
         args['vcenter'] = vcenter    
     else:
         vcenter = nullcontext()
@@ -81,11 +73,14 @@ def get_vcenter(handle: FunctionType, args: dict, *, config: ConfigParser = None
     return vcenter
         
 
-def parse_and_exec_command(parser: ArgumentParser, *, config: ConfigParser = None, section: str = None):    
+def parse_and_exec_command(parser: ArgumentParser):
     args = vars(parser.parse_args())
     handle = args.pop('handle', None)
+    csv_excel = args.pop('csv_excel')
+    if csv_excel:
+        os.environ['CSV_EXCEL'] = '1'
 
-    with get_vcenter(handle, args, config=config, section=section):
+    with get_vcenter(handle, args):
         exec_command(handle, args)
 
 

@@ -1,37 +1,65 @@
 """
-Extract performance data (or list available performance intervals, counters or metrics, see sub commands).
+Dump performance definitions or data.
 """
 from __future__ import annotations
 
-from contextlib import nullcontext
 import logging
-import math
 import os
 import re
 from argparse import ArgumentParser
 from datetime import datetime, timedelta
-from io import IOBase, StringIO
+from io import IOBase
 from time import sleep, time_ns
-from typing import Iterable, Self
 
 from pyVmomi import vim, vmodl
 from tabulate import tabulate
-from zut import add_func_command, is_naive, make_aware, out_table, write_live
+from zut import add_command, is_naive, make_aware, tabular_dumper, write_live
 
 from . import (VCenterClient, get_obj_name, get_obj_ref, get_obj_refprefix,
                get_obj_typename)
-from .settings import OUT, COUNTERS
+from .settings import TABULAR_OUT, OUT_DIR, COUNTERS
 
 _logger = logging.getLogger(__name__)
 
 
+def _add_arguments(parser: ArgumentParser):
+    parser.add_argument('-o', '--out', default=TABULAR_OUT, help="Output table (default: %(default)s).")
+    parser.add_argument('--dir', help=f"Output directory (default: {OUT_DIR}).")
+
+    subparsers = parser.add_subparsers(title='sub commands')
+    add_command(subparsers, dump_perf_all, name='all')
+    add_command(subparsers, dump_perf_intervals, name='interval')
+    add_command(subparsers, dump_perf_counters, name='counter')
+    add_command(subparsers, dump_perf_metrics, name='metric')
+    add_command(subparsers, dump_perf_providers, name='provider')
+    add_command(subparsers, dump_perf_data, name='data')
+    add_command(subparsers, display_perf_data, name='live')
+
 def handle(vcenter: VCenterClient, **kwargs):
-    return perf_data_export(vcenter, **kwargs)
+    dump_perf_all(vcenter, **kwargs)
 
-def _handle_add_arguments(parser: ArgumentParser, *, for_default_command = False):
-    if for_default_command:
-        parser.add_argument('search', nargs='*', help="Search term(s).")
+handle.add_arguments = _add_arguments
 
+
+def _add_arguments(parser: ArgumentParser):
+    parser.add_argument('-o', '--out', default=TABULAR_OUT, help="Output table (default: %(default)s).")
+    parser.add_argument('--dir', help=f"Output directory (default: {OUT_DIR}).")
+
+def dump_perf_all(vcenter: VCenterClient, **kwargs):
+    """
+    Dump performance definitions (intervals, counters, and metrics of the first managed entity).
+    """
+    dump_perf_intervals(vcenter, **kwargs)
+    dump_perf_counters(vcenter, **kwargs)
+    dump_perf_metrics(vcenter, first=True, **kwargs)
+
+dump_perf_all.add_arguments = _add_arguments
+
+
+#region Perf data
+
+def _add_arguments(parser: ArgumentParser):
+    parser.add_argument('search', nargs='+', help="Search term(s).")
     parser.add_argument('-c', '--counter', dest='counters', nargs='*', help="Counter(s).")
     parser.add_argument('--instance', help="Metric instance.")
     parser.add_argument('--consolidate', action='store_true')
@@ -42,23 +70,13 @@ def _handle_add_arguments(parser: ArgumentParser, *, for_default_command = False
     parser.add_argument('-k', '--key', choices=['name', 'ref'], default='name', help="Search key (default: %(default)s).")
     parser.add_argument('--first', action='store_true', help="Only handle the first object found for each type.")
     parser.add_argument('-t', '--type', dest='types', metavar='type', help="Managed object type name (example: datastore).")
-    parser.add_argument('-o', '--out', default=OUT, help="Output table (default: %(default)s).")
+    parser.add_argument('-o', '--out', default=TABULAR_OUT, help="Output table (default: %(default)s).")
+    parser.add_argument('--dir', help=f"Output directory (default: {OUT_DIR}).")
 
-    if for_default_command:
-        return
-
-    subparsers = parser.add_subparsers(title='sub commands')
-    add_func_command(subparsers, perf_data_export, name='data')
-    add_func_command(subparsers, perf_live_output, name='live')
-    add_func_command(subparsers, perf_interval_list, name='interval')
-    add_func_command(subparsers, perf_counter_list, name='counter')
-    add_func_command(subparsers, perf_provider_list, name='provider')
-    add_func_command(subparsers, perf_metric_list, name='metric')
-
-handle.add_arguments = _handle_add_arguments
-
-
-def perf_data_export(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern = None, *, counters: list[int|str] = None, instance: str = None, consolidate = False, interval: str|int = None, start: datetime|str = None, end: datetime|str = None, normalize: bool = False, key: str = 'name', first: bool = None, types: list[type|str]|type|str = None, out: os.PathLike|IOBase = OUT):    
+def dump_perf_data(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern, *, counters: list[int|str] = None, instance: str = None, consolidate = False, interval: str|int = None, start: datetime|str = None, end: datetime|str = None, normalize: bool = False, key: str = 'name', first: bool = None, types: list[type|str]|type|str = None, out: os.PathLike|IOBase = TABULAR_OUT, dir: os.PathLike = None):
+    """
+    Dump performance data for managed entities.
+    """
     objs = vcenter.get_objs(types, search=search, normalize=normalize, key=key, first=first)
 
     if counters and (counters == '*' or '*' in counters):
@@ -86,13 +104,23 @@ def perf_data_export(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re
         handler.extract(objs, counters=counters, instance=instance, interval=interval, start=start, end=end)
     handler.export_multi(out, counter_details=True, with_entity_ref=True, translate_percent=True)
 
+dump_perf_data.add_arguments = _add_arguments
+
+
 def _add_arguments(parser: ArgumentParser):
-    _handle_add_arguments(parser, for_default_command=True)
+    parser.add_argument('search', nargs='+', help="Search term(s).")
+    parser.add_argument('-c', '--counter', dest='counters', nargs='*', help="Counter(s).")
+    parser.add_argument('-i', '--instances', action='store_true', dest='with_instances')
+    parser.add_argument('--consolidate', action='store_true')
+    parser.add_argument('-n', '--normalize', action='store_true', help="Normalise search term(s).")
+    parser.add_argument('-k', '--key', choices=['name', 'ref'], default='name', help="Search key (default: %(default)s).")
+    parser.add_argument('--first', action='store_true', help="Only handle the first object found for each type.")
+    parser.add_argument('-t', '--type', dest='types', metavar='type', help="Managed object type name (example: datastore).")
 
-perf_data_export.add_arguments = _add_arguments
-
-
-def perf_live_output(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern = None, *, counters: list[int|str] = None, with_instances = False, consolidate = False, normalize: bool = False, key: str = 'name', first: bool = None, types: list[type|str]|type|str = None, **ignored):
+def display_perf_data(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern = None, *, counters: list[int|str] = None, with_instances = False, consolidate = False, normalize: bool = False, key: str = 'name', first: bool = None, types: list[type|str]|type|str = None, **ignored):
+    """
+    Display live performance data about management entities.
+    """    
     objs = vcenter.get_objs(types, search, normalize=normalize, key=key, first=first)
 
     if not counters:
@@ -116,41 +144,41 @@ def perf_live_output(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re
         write_live(text, newline=False)
         sleep(1.0)
 
+display_perf_data.add_arguments = _add_arguments
+
+#endregion
+
+
+#region Perf definitions
 
 def _add_arguments(parser: ArgumentParser):
-    parser.add_argument('search', nargs='*', help="Search term(s).")
-    parser.add_argument('-c', '--counter', dest='counters', nargs='*', help="Counter(s).")
-    parser.add_argument('-i', '--instances', action='store_true', dest='with_instances')
-    parser.add_argument('--consolidate', action='store_true')
-    parser.add_argument('-n', '--normalize', action='store_true', help="Normalise search term(s).")
-    parser.add_argument('-k', '--key', choices=['name', 'ref'], default='name', help="Search key (default: %(default)s).")
-    parser.add_argument('--first', action='store_true', help="Only handle the first object found for each type.")
-    parser.add_argument('-t', '--type', dest='types', metavar='type', help="Managed object type name (example: datastore).")
+    parser.add_argument('-o', '--out', default=TABULAR_OUT, help="Output table (default: %(default)s).")
+    parser.add_argument('--dir', help=f"Output directory (default: {OUT_DIR}).")
 
-perf_live_output.add_arguments = _add_arguments
-
-
-def perf_interval_list(vcenter: VCenterClient, out: os.PathLike|IOBase = OUT, **ignored):
+def dump_perf_intervals(vcenter: VCenterClient, out: os.PathLike|IOBase = TABULAR_OUT, dir: os.PathLike = None, **ignored):
     """
-    List performance intervals configured on the system.
+    Dump performance intervals configured on the system.
     """
     headers = [
         'key', 'name', 'enabled', 'level', 'sampling_period'
     ]
 
-    with out_table(out, title='perf_interval', dir=vcenter.out_dir, env=vcenter.env, headers=headers) as t:
+    with tabular_dumper(out, title='perf_interval', dir=dir or vcenter.data_dir, scope=vcenter.scope, headers=headers, truncate=True) as t:
         for interval in sorted(vcenter.perf_intervals_by_name.values(), key=lambda interval: interval.samplingPeriod):
             t.append([interval.key, interval.name, interval.enabled, interval.level, interval.samplingPeriod])
 
+dump_perf_intervals.add_arguments = _add_arguments
+
+
 def _add_arguments(parser: ArgumentParser):
-    parser.add_argument('-o', '--out', default=OUT, help="Output table (default: %(default)s).")
+    parser.add_argument('-g', '--group', help="Group of the counters (example: cpu)")
+    parser.add_argument('-l', '--level', type=int, help="Max level of the counters (from 1 to 4)")
+    parser.add_argument('-o', '--out', default=TABULAR_OUT, help="Output table (default: %(default)s).")
+    parser.add_argument('--dir', help=f"Output directory (default: {OUT_DIR}).")
 
-perf_interval_list.add_arguments = _add_arguments
-
-
-def perf_counter_list(vcenter: VCenterClient, group: str = None, level: int = None, out: os.PathLike|IOBase = OUT, **ignored):
+def dump_perf_counters(vcenter: VCenterClient, group: str = None, level: int = None, out: os.PathLike|IOBase = TABULAR_OUT, dir: os.PathLike = None, **ignored):
     """
-    List performance counters configured on the system.
+    Dump performance counters configured on the system.
     """
 
     headers = [
@@ -159,7 +187,7 @@ def perf_counter_list(vcenter: VCenterClient, group: str = None, level: int = No
 
     pm = vcenter.service_content.perfManager
     
-    with out_table(out, title='perf_counter', dir=vcenter.out_dir, env=vcenter.env, headers=headers) as t:
+    with tabular_dumper(out, title='perf_counter', dir=dir or vcenter.data_dir, scope=vcenter.scope, headers=headers, truncate=True) as t:
         for counter in sorted(pm.perfCounter, key=lambda counter: (counter.groupInfo.key, counter.nameInfo.key, counter.rollupType)):
             if group is not None and counter.groupInfo.key != group:
                 continue
@@ -167,17 +195,21 @@ def perf_counter_list(vcenter: VCenterClient, group: str = None, level: int = No
                 continue        
             t.append([counter.key, counter.groupInfo.key, counter.nameInfo.key, counter.rollupType, counter.statsType, counter.unitInfo.key, counter.level, counter.perDeviceLevel, counter.nameInfo.label, counter.nameInfo.summary])
 
+dump_perf_counters.add_arguments = _add_arguments
+
+
 def _add_arguments(parser: ArgumentParser):
-    parser.add_argument('-g', '--group', help="Group of the counters (example: cpu)")
-    parser.add_argument('-l', '--level', type=int, help="Max level of the counters (from 1 to 4)")
-    parser.add_argument('-o', '--out', default=OUT, help="Output table (default: %(default)s).")
+    parser.add_argument('search', nargs='*', help="Search term(s).")
+    parser.add_argument('-n', '--normalize', action='store_true', help="Normalise search term(s).")
+    parser.add_argument('-k', '--key', choices=['name', 'ref'], default='name', help="Search key (default: %(default)s).")
+    parser.add_argument('--first', action='store_true', help="Only handle the first object found for each type.")
+    parser.add_argument('-t', '--type', dest='types', metavar='type', help="Managed object type name (example: datastore).")
+    parser.add_argument('-o', '--out', default=TABULAR_OUT, help="Output table (default: %(default)s).")
+    parser.add_argument('--dir', help=f"Output directory (default: {OUT_DIR}).")
 
-perf_counter_list.add_arguments = _add_arguments
-
-
-def perf_provider_list(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern = None, *, normalize: bool = False, key: str = 'name', first: bool = None, types: list[type|str]|type|str = None, out: os.PathLike|IOBase = OUT, **ignored):
+def dump_perf_providers(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern = None, *, normalize: bool = False, key: str = 'name', first: bool = None, types: list[type|str]|type|str = None, out: os.PathLike|IOBase = TABULAR_OUT, dir: os.PathLike = None, **ignored):
     """
-    List performance providers (managed entities only).
+    Dump available performance providers (managed entities only).
     """
     if first is None and not search:
         first = True
@@ -196,7 +228,7 @@ def perf_provider_list(vcenter: VCenterClient, search: list[str|re.Pattern]|str|
     objs_count = len(objs)
     t0 = None
 
-    with out_table(out, title='perf_provider', dir=vcenter.out_dir, env=vcenter.env, headers=headers) as table:
+    with tabular_dumper(out, title='perf_provider', dir=dir or vcenter.data_dir, scope=vcenter.scope, headers=headers, truncate=True) as table:
         for i, obj in enumerate(objs):
             name = get_obj_name(obj)
             ref = get_obj_ref(obj)
@@ -221,6 +253,8 @@ def perf_provider_list(vcenter: VCenterClient, search: list[str|re.Pattern]|str|
             except:
                 _logger.exception(f"Error while listing providers for {name} ({ref})")   
 
+dump_perf_providers.add_arguments = _add_arguments
+
 
 def _add_arguments(parser: ArgumentParser):
     parser.add_argument('search', nargs='*', help="Search term(s).")
@@ -228,14 +262,12 @@ def _add_arguments(parser: ArgumentParser):
     parser.add_argument('-k', '--key', choices=['name', 'ref'], default='name', help="Search key (default: %(default)s).")
     parser.add_argument('--first', action='store_true', help="Only handle the first object found for each type.")
     parser.add_argument('-t', '--type', dest='types', metavar='type', help="Managed object type name (example: datastore).")
-    parser.add_argument('-o', '--out', default=OUT, help="Output table (default: %(default)s).")
+    parser.add_argument('-o', '--out', default=TABULAR_OUT, help="Output table (default: %(default)s).")
+    parser.add_argument('--dir', help=f"Output directory (default: {OUT_DIR}).")
 
-perf_provider_list.add_arguments = _add_arguments
-
-
-def perf_metric_list(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern = None, *, normalize: bool = False, key: str = 'name', first: bool = None, types: list[type|str]|type|str = None, out: os.PathLike|IOBase = OUT, **ignored):
+def dump_perf_metrics(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern = None, *, normalize: bool = False, key: str = 'name', first: bool = None, types: list[type|str]|type|str = None, out: os.PathLike|IOBase = TABULAR_OUT, dir: os.PathLike = None, **ignored):
     """
-    List available metrics (managed entities and physical or virtual devices associated with managed entities).
+    Dump available performance metrics (managed entities and physical or virtual devices associated with managed entities).
     """
     if first is None and not search:
         first = True
@@ -254,7 +286,7 @@ def perf_metric_list(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re
     objs_count = len(objs)
     t0 = None
 
-    with out_table(out, title='perf_metric', dir=vcenter.out_dir, env=vcenter.env, headers=headers) as table:
+    with tabular_dumper(out, title='perf_metric', dir=dir or vcenter.data_dir, scope=vcenter.scope, headers=headers, truncate=True) as table:
         for i, obj in enumerate(objs):
             if isinstance(obj, (vim.Folder, vim.Network)):
                 continue # No performance data for these types
@@ -289,16 +321,9 @@ def perf_metric_list(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re
             except:
                 _logger.exception(f"Error while listing metrics for {name} ({ref})")
 
-def _add_arguments(parser: ArgumentParser):
-    parser.add_argument('search', nargs='*', help="Search term(s).")
-    parser.add_argument('-n', '--normalize', action='store_true', help="Normalise search term(s).")
-    parser.add_argument('-k', '--key', choices=['name', 'ref'], default='name', help="Search key (default: %(default)s).")
-    parser.add_argument('--first', action='store_true', help="Only handle the first object found for each type.")
-    parser.add_argument('-t', '--type', dest='types', metavar='type', help="Managed object type name (example: datastore).")
-    parser.add_argument('-o', '--out', default=OUT, help="Output table (default: %(default)s).")
+dump_perf_metrics.add_arguments = _add_arguments
 
-perf_metric_list.add_arguments = _add_arguments
-
+#endregion
 
 
 class PerfHandler:
@@ -628,7 +653,7 @@ class PerfHandler:
                     yield counter
 
 
-    def export_single(self, out: os.PathLike|IOBase = False, *, title: str = None, with_entity_ref=False, translate_percent=False):
+    def export_single(self, *, with_entity_ref=False, translate_percent=False):
         """
         Export to a tabulated text.
         """
@@ -665,47 +690,43 @@ class PerfHandler:
                 headers.append(f"{counter.groupInfo.key}.{counter.nameInfo.key}:max")
 
         rows = []
-        with out_table(out, title=title, dir=self._vcenter.out_dir, env=self._vcenter.env, floatfmt='.1f', headers=headers) as table:
-            for row in self.iter_rows():
-                # Prepare output row
-                outrow = [get_obj_name(row.entity, use_cache=True)]
-                if with_entity_ref:
-                    outrow.append(get_obj_ref(row.entity))
-                    outrow.append(get_obj_typename(row.entity))
+        for row in self.iter_rows():
+            # Prepare output row
+            outrow = [get_obj_name(row.entity, use_cache=True)]
+            if with_entity_ref:
+                outrow.append(get_obj_ref(row.entity))
+                outrow.append(get_obj_typename(row.entity))
 
-                if with_instance:
-                    outrow.append(row.instance)
+            if with_instance:
+                outrow.append(row.instance)
 
-                outrow.append(row.timestamp)
-                if with_interval:
-                    outrow.append(row.interval)
-        
-                if self._consolidate:
-                    outrow.append(row.values_count)
+            outrow.append(row.timestamp)
+            if with_interval:
+                outrow.append(row.interval)
+    
+            if self._consolidate:
+                outrow.append(row.values_count)
 
-                for counter in counters:
-                    value = row.get_value_by_counter(counter, translate_percent)
+            for counter in counters:
+                value = row.get_value_by_counter(counter, translate_percent)
+                outrow.append(value)
+
+                if self._consolidate and counter.rollupType == 'average' and counter in consolidate_counters:
+                    value = row.get_maximum_value_by_counter(counter, translate_percent)
                     outrow.append(value)
 
-                    if self._consolidate and counter.rollupType == 'average' and counter in consolidate_counters:
-                        value = row.get_maximum_value_by_counter(counter, translate_percent)
-                        outrow.append(value)
+            rows.append(outrow)
 
-                table.append(outrow)
-                if out is False:
-                    rows.append(outrow)
-
-            if out is False:
-                # sort by: entity_name, instance (if given), timestamp
-                rows.sort(key=lambda row: (
-                    row[0], # entity_name
-                    row[1 + (2 if with_entity_ref else 0)] if with_instance else '', # instance
-                    row[1 + (2 if with_entity_ref else 0) + (1 if with_instance else 0)], # timestamp
-                ))
-                return headers, rows
+            # sort by: entity_name, instance (if given), timestamp
+            rows.sort(key=lambda row: (
+                row[0], # entity_name
+                row[1 + (2 if with_entity_ref else 0)] if with_instance else '', # instance
+                row[1 + (2 if with_entity_ref else 0) + (1 if with_instance else 0)], # timestamp
+            ))
+            return headers, rows
             
 
-    def export_multi(self, out: os.PathLike|IOBase = OUT, *, counter_details=False, with_entity_ref=False, translate_percent=False):
+    def export_multi(self, out: os.PathLike|IOBase = TABULAR_OUT, *, dir: os.PathLike = None, counter_details=False, with_entity_ref=False, translate_percent=False):
         """
         Export to entity-and-instance-specific tables.
         """
@@ -740,7 +761,7 @@ class PerfHandler:
                         consolidate_counters.add(counter)
                         headers.append(f"{counter.groupInfo.key}.{counter.nameInfo.key}:max")
 
-                with out_table(out, title=title, dir=self._vcenter.out_dir, env=self._vcenter.env) as table:
+                with tabular_dumper(out, title=title, dir=dir or self._vcenter.data_dir, scope=self._vcenter.scope, truncate=True) as table:
                     if counter_details:
                         preheaders_before_counters[0] = '(counter_key)'
                         row = preheaders_before_counters + [counter if isinstance(counter, int) else counter.key for counter in counters]

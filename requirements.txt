@@ -1,3 +1,4 @@
-zut @ git+https://github.com/ipamo/zut # TODO: zut[commons] >= 0.9.5
+# TODO: zut[default] == X.X.X
+python-dotenv
 pyvmomi
 requests

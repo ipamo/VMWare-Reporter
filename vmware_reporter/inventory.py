@@ -15,10 +15,10 @@ from pyVmomi import vim
 from . import VCenterClient, get_obj_name, get_obj_ref
 from .settings import INVENTORY_OUT
 
+
 _logger = logging.getLogger(__name__)
 
-
-def export_inventory(vcenter: VCenterClient, assets: list[str] = None, out: os.PathLike|IOBase = INVENTORY_OUT):
+def inventory(vcenter: VCenterClient, assets: list[str] = None, out: os.PathLike|IOBase = INVENTORY_OUT):
     """
     Export an inventory of VMWare managed objects to a YAML file.
     """
@@ -32,7 +32,7 @@ def export_inventory(vcenter: VCenterClient, assets: list[str] = None, out: os.P
     if isinstance(out, IOBase):
         out_name = getattr(out, 'name', '<io>')
     else:
-        out = os.path.join(vcenter.out_dir, str(out).format(env=vcenter.env))
+        out = os.path.join(vcenter.data_dir, str(out).format(scope=vcenter.scope))
         out_name = str(out)
         
     _logger.info(f"export inventory to {out_name}")
@@ -43,11 +43,11 @@ def _add_arguments(parser: ArgumentParser):
     parser.add_argument('-o', '--out', default=INVENTORY_OUT, help="Output YAML file (default: %(default)s).")
     parser.add_argument('--asset', nargs='*', dest='assets')
 
-export_inventory.add_arguments = _add_arguments
+inventory.add_arguments = _add_arguments
 
 
 def build_inventory(vcenter: VCenterClient, assets: list[str] = None) -> InventoryNode:
-    node = InventoryNode(vcenter.env, nature=VCenterClient)
+    node = InventoryNode(vcenter.scope, nature=VCenterClient)
 
     if not assets:
         assets = ['folder', 'license', 'authorization']

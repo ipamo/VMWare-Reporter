@@ -20,32 +20,29 @@ pip install vmware-reporter[excel]
 
 ## Configuration
 
-Create file `C:\Users\$USER\AppData\Local\vmware-reporter\vmware-reporter.conf` (`/home/$USER/.config/vmware-reporter/vmware-reporter.conf` on Linux).
+Create file `C:\ProgramData\vmware-reporter\.env` (`/etc/vmware-reporter.env` on Linux).
 
 Example:
 
 ```ini
-[vmware-reporter]
-host = myvcenter.example.org
-user = reporter@vsphere.local
-password = ...
-no_ssl_verify = True
+VMWARE_HOST = myvcenter.example.org
+VMWARE_USER = reporter@vsphere.local
+VMWARE_PASSWORD = ...
+VMWARE_NO_SSL_VERIFY = False
 ```
 
-Several environments may be distinguished. Example for two environments named `ENV1` and `ENV2`:
+Several scopes may be distinguished. Example for two scopes named `SCOPE1` and `SCOPE2`:
 
 ```ini
-[vmware-reporter:ENV1]
-host = myvcenter.env1.example.org
-user = reporter@vsphere.local
-password = ...
-no_ssl_verify = True
+VMWARE_SCOPES = SCOPE1,SCOPE2
 
-[vmware-reporter:ENV2]
-host = myvcenter.env2.example.org
-user = reporter@vsphere.local
-password = ...
-no_ssl_verify = True
+VMWARE_SCOPE1_HOST = myvcenter1.example.org
+VMWARE_SCOPE1_USER = reporter@vsphere.local
+VMWARE_SCOPE1_PASSWORD = ...
+
+VMWARE_SCOPE2_HOST = myvcenter2.example.org
+VMWARE_SCOPE2_USER = reporter@vsphere.local
+VMWARE_SCOPE2_PASSWORD = ...
 ```
 
 
@@ -73,7 +70,7 @@ vmware-reporter inventory
 - Export all available information about VMWare managed objects to JSON files:
 
 ```sh
-vmware-reporter dump
+vmware-reporter export
 ```
 
 - Reconfigure VMs (mass operation): copy template [vm_reconfigure.xlsx](https://ipamo.net/vmware-reporter/latest/_static/templates/vm_reconfigure.xlsx) to `data/vm_reconfigure.xlsx`, fill-in this file, then:
@@ -82,10 +79,10 @@ vmware-reporter dump
 vmware-reporter vm reconfigure
 ```
 
-- If you use several environments, put files in `data/ENV1/` instead of `data/` and specify environment on the command line. Example:
+- If you use several scopes, put files in `data/SCOPE1/` instead of `data/` and specify scope on the command line. Example:
 
 ```sh
-vmware-reporter -e ENV1 vm reconfigure
+vmware-reporter -e SCOPE1 vm reconfigure
 ```
 
 Complete help about command-line usage may be displayed by typing:

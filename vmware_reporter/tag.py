@@ -1,5 +1,5 @@
 """
-List tags and categories defined on the system.
+Dump tag and category definitions.
 """
 from __future__ import annotations
 
@@ -7,29 +7,42 @@ import os
 from argparse import _SubParsersAction, ArgumentParser, RawTextHelpFormatter
 from io import IOBase
 
-from zut import out_table, get_help_text, get_description_text, add_func_command
+from zut import tabular_dumper, get_help_text, get_description_text, add_command
 
 from . import VCenterClient
-from .settings import OUT
-
-def add_tag_commands(commands_subparsers: _SubParsersAction[ArgumentParser], *, name: str):
-    parser = commands_subparsers.add_parser(name, help=get_help_text(__doc__), description=get_description_text(__doc__), formatter_class=RawTextHelpFormatter, add_help=False)
-
-    group = parser.add_argument_group(title='Command options')
-    group.add_argument('-h', '--help', action='help', help=f"Show this command help message and exit.")
-
-    subparsers = parser.add_subparsers(title='Sub commands')
-    add_func_command(subparsers, list_tags, name='tags')
-    add_func_command(subparsers, list_categories, name='categories')
+from .settings import TABULAR_OUT, OUT_DIR
 
 
-def list_categories(vcenter: VCenterClient, out: os.PathLike|IOBase = OUT):
+def _add_arguments(parser: ArgumentParser):
+    parser.add_argument('-o', '--out', default=TABULAR_OUT, help="Output table (default: %(default)s).")
+    parser.add_argument('--dir', help=f"Output directory (default: {OUT_DIR}).")
+
+    subparsers = parser.add_subparsers(title='sub commands')
+    add_command(subparsers, dump_tag_values, name='value')
+    add_command(subparsers, dump_tag_categories, name='category')
+
+def dump_tags(vcenter: VCenterClient, out: os.PathLike|IOBase = TABULAR_OUT, dir: os.PathLike = None):
     """
-    Export tag categories.
+    Dump tag category and value definitions.
+    """
+    dump_tag_values(vcenter, out=out, dir=dir)
+    dump_tag_categories(vcenter, out=out, dir=dir)
+
+dump_tags.add_arguments = _add_arguments
+handle = dump_tags
+
+
+def _add_arguments(parser: ArgumentParser):
+    parser.add_argument('-o', '--out', default=TABULAR_OUT, help="Output table (default: %(default)s).")
+    parser.add_argument('--dir', help=f"Output directory (default: {OUT_DIR}).")
+
+def dump_tag_categories(vcenter: VCenterClient, *, out: os.PathLike|IOBase = TABULAR_OUT, dir: os.PathLike = None):
+    """
+    Dump tag category definitions.
     """
     headers=['uuid', 'name', 'description', 'cardinality', 'associable_types']
 
-    with out_table(out, title="categories", dir=vcenter.out_dir, env=vcenter.env, headers=headers) as t:
+    with tabular_dumper(out, title="tag_category", dir=dir or vcenter.data_dir, scope=vcenter.scope, headers=headers, truncate=True) as t:
         for category in vcenter.get_categories():
             t.append([
                 category.uuid,
@@ -39,19 +52,20 @@ def list_categories(vcenter: VCenterClient, out: os.PathLike|IOBase = OUT):
                 category.associable_types,
             ])
 
+dump_tag_categories.add_arguments = _add_arguments
+
+
 def _add_arguments(parser: ArgumentParser):
-    parser.add_argument('-o', '--out', default=OUT, help="Output table (default: %(default)s).")
+    parser.add_argument('-o', '--out', default=TABULAR_OUT, help="Output table (default: %(default)s).")
+    parser.add_argument('--dir', help=f"Output directory (default: {OUT_DIR}).")
 
-list_categories.add_arguments = _add_arguments
-
-
-def list_tags(vcenter: VCenterClient, out: os.PathLike|IOBase = OUT):
+def dump_tag_values(vcenter: VCenterClient, *, out: os.PathLike|IOBase = TABULAR_OUT, dir: os.PathLike = None):
     """
-    Export tags.
+    Dump tag value definitions.
     """
     headers=['uuid', 'name', 'description', 'category']
 
-    with out_table(out, title="tags", dir=vcenter.out_dir, env=vcenter.env, headers=headers) as t:
+    with tabular_dumper(out, title="tag_value", dir=dir or vcenter.data_dir, scope=vcenter.scope, headers=headers, truncate=True) as t:
         for tag in vcenter.get_tags():
             t.append([
                 tag.uuid,
@@ -60,7 +74,4 @@ def list_tags(vcenter: VCenterClient, out: os.PathLike|IOBase = OUT):
                 tag.category.name,
             ])
 
-def _add_arguments(parser: ArgumentParser):
-    parser.add_argument('-o', '--out', default=OUT, help="Output table (default: %(default)s).")
-
-list_tags.add_arguments = _add_arguments
+dump_tag_values.add_arguments = _add_arguments

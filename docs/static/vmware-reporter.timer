@@ -1,5 +1,5 @@
 [Unit]
-Description=Run vmware-reporter (autoreport) every day
+Description=Run vmware-reporter (all) every day
 OnFailure=notify-email@%i.service
 
 [Timer]

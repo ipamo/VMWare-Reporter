@@ -1,15 +1,26 @@
-import os
-import vmware_reporter
-from zut import get_config
+import sys
+from configparser import RawConfigParser
+from dotenv import load_dotenv
+from zut import get_variable, get_list_variable
 
-CONFIG = get_config(os.environ.get('VMWARE_REPORTER_CONFIG') or vmware_reporter)
-CONFIG_SECTION = os.environ.get('VMWARE_REPORTER_CONFIG_SECTION') or 'vmware-reporter'
+# Load system environment file
+load_dotenv('C:\\ProgramData\\vmware-reporter\\.env' if sys.platform == 'win32' else '/etc/vmware-reporter.env')
 
-OUT_DIR = CONFIG.get(CONFIG_SECTION, 'out_dir', fallback='data/{env}')
-OUT = CONFIG.get(CONFIG_SECTION, 'out', fallback='{title}.csv')
-DUMP_OUT = CONFIG.get(CONFIG_SECTION, 'dump_out', fallback='dumps/{typename}/{name} ({ref}).json')
-INVENTORY_OUT = CONFIG.get(CONFIG_SECTION, 'inventory_out', fallback='inventory.yml')
-AUTOREPORT_OUT = CONFIG.get(CONFIG_SECTION, 'autoreport_out', fallback='autoreport.xlsx#{title}')
-ARCHIVES_DIR = CONFIG.get(CONFIG_SECTION, 'archives_dir', fallback='archives')
+# Load local environment file (defaults to .env in the current working directory or its parents)
+load_dotenv(override=True)
 
-COUNTERS = CONFIG.getlist(CONFIG_SECTION, 'counters', fallback=None, delimiter=',')
+# Define global configuration directives
+OUT_DIR = get_variable('VMWARE_OUT_DIR', 'data/{scope}')
+OUT = get_variable('VMWARE_OUT', 'report.xlsx:{title}')
+ARCHIVATE = get_variable('VMWARE_ARCHIVATE', '0')
+if (_state := RawConfigParser.BOOLEAN_STATES.get(ARCHIVATE.lower())) is not None:
+    ARCHIVATE = _state
+
+TABULAR_OUT = get_variable('VMWARE_TABULAR_OUT', '{title}.csv')
+EXPORT_OUT = get_variable('VMWARE_REPORT_OUT', 'export/{typename}/{name} ({ref}).json')
+INVENTORY_OUT = get_variable('VMWARE_INVENTORY_OUT', 'inventory.yml')
+
+COUNTERS = get_list_variable('VMWARE_COUNTERS')
+
+EXTRACT_TAG_CATEGORIES = get_list_variable('VMWARE_EXTRACT_TAG_CATEGORIES')
+EXTRACT_CUSTOM_VALUES = get_list_variable('VMWARE_EXTRACT_CUSTOM_VALUES')

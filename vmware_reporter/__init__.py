@@ -11,7 +11,7 @@ import re
 import urllib3
 import requests
 from collections.abc import Callable, Iterator
-from configparser import ConfigParser, _UNSET
+from configparser import _UNSET
 from contextlib import nullcontext
 from datetime import date
 from io import IOBase
@@ -24,12 +24,11 @@ from uuid import UUID
 from pyVim.connect import Disconnect, SmartConnect
 from pyVmomi import vim, vmodl
 from pyVmomi.VmomiSupport import _managedDefMap
-from zut import (ExtendedJSONEncoder, Filters, MessageError,
-                 iter_dicts_from_csv, resolve_host, configure_smb_credentials)
+from zut import (ExtendedJSONEncoder, Filters, SimpleError,
+                 tabular_loader, configure_smb_credentials, get_variable, get_secret_variable, get_bool_variable, get_list_variable)
 from zut.excel import ExcelWorkbook, is_excel_path, split_excel_path
-from zut.files import smbclient
 
-from .settings import CONFIG, CONFIG_SECTION
+from .settings import OUT_DIR
 
 __prog__ = 'vmware-reporter'
 
@@ -52,65 +51,52 @@ class VCenterClient:
     _instances: dict[str,VCenterClient] = {}
 
     @classmethod
-    def for_env(cls, env: str):
-        if vcenter := cls._instances.get(env):
+    def for_scope(cls, scope: str = None):
+        if vcenter := cls._instances.get(scope):
             return vcenter
         else:
-            return VCenterClient(env)
+            return VCenterClient(scope)
 
 
-    def __init__(self, env: str = None, *, host: str = None, user: str = None, password: str = None, no_ssl_verify: bool = None, out_dir: str|Path = None, config: ConfigParser = None, section: str = None):
+    def __init__(self, scope: str = None, *, host: str = None, user: str = None, password: str = None, no_ssl_verify: bool = None, out_dir: str|Path = None):
         """
         Create a new vCenter client.
 
-        If `host`, `user`, `password` or `no_ssl_verify` options are not provided, they are read from configuration file
-        in section `[vmware-reporter]` (or `[vmware-reporter:{name}]` if `name` is given).
+        If `host`, `user`, `password` or `no_ssl_verify` options are not provided, they are read from environment variables (VMWARE_*).
 
-        :param env: An optional name to distinguish between several vCenters.
+        :param scope: An optional name to distinguish between several vCenters.
         :param host: Host name of the vCenter.
         :param user: Name of the vCenter user having access to the API.
         :param password: Password of the vCenter user having access to the API.
         """        
-        if not config:
-            config = CONFIG
-        if not section:
-            section = CONFIG_SECTION
+        if not scope:
+            scopes = VCenterClient.get_available_scopes()
+            if len(scopes) > 1:
+                raise SimpleError(f"VCenter scope must be provided. Available: {', '.join(scopes) if scopes else 'none'}.")
+            elif len(scopes) == 1:
+                scope = scopes[0]
 
-        if not self._instances:
-            if smbclient:
-                smb_user = config.get(section, 'smb_user', fallback=None)
-                smb_password = config.get(section, 'smb_password', fallback=None)
-                if smb_user and smb_password:
-                    configure_smb_credentials(smb_user, smb_password)
-                    
-            atexit.register(self._atexit)
-            self._instances[env] = self            
-        elif env in self._instances:
-            raise ValueError(f"VCenter already instanciated for env {env}")
+        self.scope = scope
+
+        if self.scope in self._instances:
+            raise ValueError(f"VCenter already instanciated for scope {self.scope}")
+        else:
+            if not self._instances:
+                configure_smb_credentials(once=True)                    
+                atexit.register(self._atexit)
+            self._instances[self.scope] = self
         
-        if not env:
-            envs = VCenterClient.get_configured_envs(config=config, section=section)
-            if len(envs) > 1:
-                raise MessageError(f"Name of the environment / VCenter to use must be provided. Available: {', '.join(envs) if envs else 'none'}.")
-            elif len(envs) == 1:
-                env = envs[0]
-            else:
-                raise MessageError(f"No VCenter client configured.")
-        self.env = env or 'default'
-
-        full_section = section + ('' if env == 'default' else f':{env}')
-        self.host = host if host is not None else config.get(full_section, 'host')
-        self.user = user if user is not None else config.get(full_section, 'user')
-        self.password = password if password is not None else config.get(full_section, 'password')
-        self.no_ssl_verify = no_ssl_verify if no_ssl_verify is not None else config.getboolean(full_section, 'no_ssl_verify', fallback=False)
+        scope_suffix = f'_{self.scope}' if self.scope else ''
+        self.host = host if host is not None else get_variable(f'VMWARE{scope_suffix}_HOST')
+        self.user = user if user is not None else get_variable(f'VMWARE{scope_suffix}_USER')
+        self.password = password if password is not None else get_secret_variable(f'VMWARE{scope_suffix}_PASSWORD')
+        self.no_ssl_verify = no_ssl_verify if no_ssl_verify is not None else get_bool_variable(f'VMWARE{scope_suffix}_NO_SSL_VERIFY')
 
         if out_dir is None:
-            out_dir = config.get(full_section, 'out_dir', fallback=None)
-            if out_dir is None:
-                out_dir = config.get(section, 'out_dir', fallback='data/{env}')
-        self.out_dir = Path(str(out_dir).format(env='' if env == 'default' else env))
+            out_dir = OUT_DIR
+        self.data_dir = Path(str(out_dir).format(scope=scope if scope else ''))
         
-        self.logger = logging.getLogger(f'{self.__class__.__module__}.{self.__class__.__qualname__}' + ('' if env == 'default' else f'.{self.env}'))
+        self._logger = logging.getLogger(f'{self.__class__.__module__}.{self.__class__.__qualname__}' + (f'.{self.scope}' if self.scope else ''))
 
         self._service_instance: vim.ServiceInstance = None
         self._service_content: vim.ServiceInstanceContent = None
@@ -128,7 +114,7 @@ class VCenterClient:
 
 
     def __str__(self):
-        return f'{type(self).__name__}:{self.env}'
+        return type(self).__name__ + (f':{self.scope}' if self.scope else '')
     
 
     #region Enter/connect and exit/close
@@ -143,20 +129,16 @@ class VCenterClient:
 
 
     def connect(self):
-        addrs = resolve_host(self.host, timeout=5.0)
-        if not addrs:
-            raise ValueError(f"Cannot resolve host name \"{self.host}\"")
-        
-        addr = addrs[0]
-        self.logger.debug("Connect to %s vcenter (%s=%s, user: %s)", self.env, self.host, addr, self.user)
+        self._logger.debug("Connect to %s vcenter (host: %s, user: %s)", self.scope if self.scope else '', self.host, self.user)
         self._service_instance = SmartConnect(host=self.host, user=self.user, pwd=self.password, disableSslCertValidation=self.no_ssl_verify)
 
 
     def close(self):
         if self._service_instance is not None:
-            self.logger.debug("Disconnect from %s vcenter (%s, user: %s)", self.env, self.host, self.user)
+            self._logger.debug("Disconnect from %s vcenter (%s, user: %s)", self.scope if self.scope else '', self.host, self.user)
             Disconnect(self._service_instance)
             self._service_instance = None
+        
         self._rest_disconnect()
     
 
@@ -451,14 +433,14 @@ class VCenterClient:
                             if state == vim.TaskInfo.State.success:
                                 remaining_task_strs.remove(str(task))
                                 if log_prefix := log_prefixes.get(task):
-                                    self.logger.info(f"{log_prefix}: SUCCESS")
+                                    self._logger.info(f"{log_prefix}: SUCCESS")
                                 if success_callback:
                                     success_callback(task)
                             elif state == vim.TaskInfo.State.error:
                                 if len(task_list) > 1:
                                     remaining_task_strs.remove(str(task))
                                     log_prefix = log_prefixes.get(task)
-                                    self.logger.error(f"{f'{log_prefix}: ' if log_prefix else ''}{task.info.error}", exc_info=task.info.error)                                        
+                                    self._logger.error(f"{f'{log_prefix}: ' if log_prefix else ''}{task.info.error}", exc_info=task.info.error)                                        
                                     if error_callback:
                                         error_callback(task, task.info.error)
                                     task_failures += 1
@@ -471,32 +453,21 @@ class VCenterClient:
                 pc_filter.Destroy()
 
         if task_failures > 0:
-            raise MessageError(f"{task_failures} task{'s' if task_failures > 1 else ''} failed (see previous logs)")
+            raise SimpleError(f"{task_failures} task{'s' if task_failures > 1 else ''} failed (see previous logs)")
 
     #endregion
 
 
     #region Class helpers
+
+    _available_scopes: list[str] = None
     
     @classmethod
-    def get_configured_envs(cls, *, config: ConfigParser = None, section: str = None):
-        if not config:
-            config = CONFIG
-        if not section:
-            section = CONFIG_SECTION
+    def get_available_scopes(cls):
+        if cls._available_scopes is None:
+            cls._available_scopes = get_list_variable('VMWARE_SCOPES', [])
 
-        envs: list[str] = []
-        for _section in config.sections():
-            if m := re.match(r'^' + re.escape(section) + r'(?:\:(.+))?', _section):
-                env = m[1]
-                if env == 'default':
-                    raise ValueError(f"Invalid configuration section \"{_section}\": name \"default\" is reserved")
-                if not env:
-                    env = 'default'
-                if config.get(_section, 'host', fallback=None) is not None:
-                    envs.append(env)
-
-        return envs
+        return cls._available_scopes
     
     #endregion
 
@@ -542,13 +513,14 @@ class VCenterClient:
     def _rest_disconnect(self):
         if 'vmware-api-session-id' in self._rest_session.headers:
             self.rest_request('/rest/com/vmware/cis/session', method='DELETE')
+            self._rest_session.headers.pop('vmware-api-session-id')
 
     def rest_request(self, path: str, *, method = 'GET', **options):
         if not 'vmware-api-session-id' in self._rest_session.headers and not 'auth' in options:
             session_id = self.rest_request('/rest/com/vmware/cis/session', method='POST', auth=(self.user, self.password))
             self._rest_session.headers.update({'vmware-api-session-id': session_id})
 
-        self.logger.debug("%s %s", method, path)
+        self._logger.debug("%s %s", method, path)
         url = f"https://{self.host}{path}"
 
         with urllib3.warnings.catch_warnings() if self.no_ssl_verify else nullcontext():
@@ -559,12 +531,12 @@ class VCenterClient:
         response.raise_for_status()
         if response.headers.get('content-type') == 'application/json':
             dict_response = response.json()
-            self.logger.debug("JSON response: %s", dict_response)
+            self._logger.debug("JSON response: %s", dict_response)
             return dict_response['value']
         else:
-            if self.logger.isEnabledFor(logging.DEBUG):
+            if self._logger.isEnabledFor(logging.DEBUG):
                 text_response = response.text
-                self.logger.debug("TEXT response: %s", text_response)
+                self._logger.debug("TEXT response: %s", text_response)
             return None
     
     @property
@@ -683,7 +655,7 @@ def _expand_search_from_files(search: list[str|Path|re.Pattern]|str|Path|re.Patt
                     yield row[key]
 
     def expand_from_csv_file(path: Path):
-        for row in iter_dicts_from_csv(path):
+        for row in tabular_loader(path):
             if not key in row:
                 raise ValueError(f"Column \"{key}\" not found in {path}")
             if row[key]:
@@ -1081,7 +1053,7 @@ def dictify_obj(obj: vim.ManagedEntity, *, object_types=False, exclude_keys=[], 
     return handle_any(obj)
 
 
-def dump_obj(obj: vim.ManagedObject, obj_out: os.PathLike|IOBase, *, title: str = None):
+def export_obj(obj: vim.ManagedObject, obj_out: os.PathLike|IOBase, *, title: str = None):
     if not title:
         title = getattr(obj, 'name', None)
         if not title:
@@ -1109,5 +1081,5 @@ __all__ = (
     '__prog__', '__version__', '__version_tuple__',
     'VCenterClient', 'Category', 'Tag',
     'OBJ_TYPES_BY_REFPREFIX', 'OBJ_TYPES',
-    'get_obj_name', 'get_obj_ref', 'get_obj_path', 'get_obj_type', 'get_obj_typename', 'get_obj_refprefix', 'identify_obj', 'dictify_value', 'dictify_obj', 'dump_obj',
+    'get_obj_name', 'get_obj_ref', 'get_obj_path', 'get_obj_type', 'get_obj_typename', 'get_obj_refprefix', 'identify_obj', 'dictify_value', 'dictify_obj', 'export_obj',
 )
