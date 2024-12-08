@@ -18,6 +18,6 @@ API reference
     vmware_reporter.inventory
     vmware_reporter.net
     vmware_reporter.perf
-    vmware_reporter.resourcepool
+    vmware_reporter.pool
     vmware_reporter.tag
     vmware_reporter.vm
