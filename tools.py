@@ -11,10 +11,10 @@ from argparse import ArgumentParser
 from importlib import import_module
 from pathlib import Path
 from typing import Callable
-from zut import Color
+from zut import Color, slugify_snake
 from vmware_reporter import __prog__, __version__
 
-SNAKE_PROG = __prog__.replace('-', '_')
+SNAKE_PROG = slugify_snake(__prog__)
 
 PUBLISH_PATTERN = re.compile(r'^' + re.escape(SNAKE_PROG) + r'\-\d+\.\d+\.\d+((a|b)\d+)?+-py3-none-any\.whl$')
 PUBLISH_DOCS_PATTERN = re.compile(r'^' + re.escape(SNAKE_PROG) + r'\-docs\-\d+\.\d+\.\d+((a|b)\d+)?+\.zip$')

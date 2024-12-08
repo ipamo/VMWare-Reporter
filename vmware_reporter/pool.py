@@ -12,7 +12,7 @@ from io import IOBase
 from pyVmomi import vim
 from zut import Header, tabular_dumper
 
-from . import VCenterClient, get_obj_name, get_obj_ref
+from . import VCenterClient, get_obj_name, get_obj_ref, settings
 from .settings import TABULAR_OUT, OUT_DIR
 
 _logger = logging.getLogger(__name__)
@@ -45,7 +45,7 @@ def dump_pools(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Patte
         Header('used_memory', fmt='gib'),
     ]
 
-    with tabular_dumper(out, title='pool', dir=dir or vcenter.data_dir, scope=vcenter.scope, headers=headers, truncate=True) as t:
+    with tabular_dumper(out, title='pool', dir=dir or vcenter.data_dir, scope=vcenter.scope, headers=headers, truncate=True, excel=settings.CSV_EXCEL) as t:
         for obj in vcenter.iter_objs(vim.ResourcePool, search, normalize=normalize, key=key):            
             try:
                 _logger.info(f"Analyze resource pool {get_obj_name(obj)}")

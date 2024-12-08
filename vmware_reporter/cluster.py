@@ -15,7 +15,7 @@ from pyVmomi import vim
 from tabulate import tabulate
 from zut import add_command, tabular_dumper, write_live
 
-from . import VCenterClient, get_obj_name, get_obj_ref
+from . import VCenterClient, get_obj_name, get_obj_ref, settings
 from .settings import TABULAR_OUT, OUT_DIR
 
 _logger = logging.getLogger(__name__)
@@ -80,7 +80,7 @@ def dump_clusters(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pa
 
     perf_manager = vcenter.service_content.perfManager
 
-    with tabular_dumper(out, title='cluster', dir=dir or vcenter.data_dir, scope=vcenter.scope, headers=headers, truncate=True) as t:
+    with tabular_dumper(out, title='cluster', dir=dir or vcenter.data_dir, scope=vcenter.scope, headers=headers, truncate=True, excel=settings.CSV_EXCEL) as t:
         for i, obj in enumerate(objs):
             name = get_obj_name(obj)
             ref = get_obj_ref(obj)

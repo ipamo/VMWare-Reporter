@@ -11,7 +11,7 @@ from argparse import ArgumentParser
 from pyVmomi import vim
 from zut import tabular_dumper
 
-from . import VCenterClient, get_obj_ref, get_obj_typename
+from . import VCenterClient, get_obj_ref, get_obj_typename, settings
 from .settings import TABULAR_OUT, OUT_DIR
 
 
@@ -33,7 +33,7 @@ def dump_nets(vcenter: VCenterClient, *, out: os.PathLike|IOBase = TABULAR_OUT, 
         'default_vlan',
     ]
 
-    with tabular_dumper(out, title='switch', dir=dir or vcenter.data_dir, scope=vcenter.scope, headers=switchs_headers, truncate=True) as t:
+    with tabular_dumper(out, title='switch', dir=dir or vcenter.data_dir, scope=vcenter.scope, headers=switchs_headers, truncate=True, excel=settings.CSV_EXCEL) as t:
         for obj in vcenter.iter_objs(vim.DistributedVirtualSwitch):
             uplinks = []
             for portgroup in obj.config.uplinkPortgroup:
@@ -61,7 +61,7 @@ def dump_nets(vcenter: VCenterClient, *, out: os.PathLike|IOBase = TABULAR_OUT, 
         'default_vlan',
     ]
 
-    with tabular_dumper(out, title='network', dir=dir or vcenter.data_dir, scope=vcenter.scope, headers=networks_headers, truncate=True) as t:
+    with tabular_dumper(out, title='network', dir=dir or vcenter.data_dir, scope=vcenter.scope, headers=networks_headers, truncate=True, excel=settings.CSV_EXCEL) as t:
         for obj in sorted(vcenter.iter_objs(vim.Network), key=_network_sortkey):
             if isinstance(obj, vim.dvs.DistributedVirtualPortgroup):
                 typename = 'DVP'

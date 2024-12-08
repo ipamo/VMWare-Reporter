@@ -12,15 +12,13 @@ from types import FunctionType
 from zut import add_command, configure_logging, exec_command, get_help_text
 
 from . import (VCenterClient, __prog__, __version__, cluster,
-               customvalue, datastore, all, host, net, perf, pool, tag, vm)
+               customvalue, datastore, all, host, net, perf, pool, tag, vm, settings)
 from .export import export
 from .inventory import inventory
 
 
 def main():
     configure_logging()
-    #TODO? register_locale(use_excel_csv=(os.environ.get('USE_EXCEL_CSV') or '1').lower() in ['1', 'yes', 'true', 'on'])
-    #TODO? OutTable.DEFAULT_EXCEL_ATEXIT = (os.environ.get('DEFAULT_EXCEL_ATEXIT') or '1').lower() in ['1', 'yes', 'true', 'on']
 
     parser = init_parser(__prog__, __version__, __doc__)
 
@@ -76,9 +74,9 @@ def get_vcenter(handle: FunctionType, args: dict):
 def parse_and_exec_command(parser: ArgumentParser):
     args = vars(parser.parse_args())
     handle = args.pop('handle', None)
-    csv_excel = args.pop('csv_excel')
-    if csv_excel:
-        os.environ['CSV_EXCEL'] = '1'
+    csv_excel = args.pop('csv_excel', None)
+    if csv_excel is not None:
+        settings.CSV_EXCEL = csv_excel
 
     with get_vcenter(handle, args):
         exec_command(handle, args)

@@ -16,7 +16,7 @@ from pyVmomi import vim
 from tabulate import tabulate
 from zut import add_command, tabular_dumper, write_live
 
-from . import VCenterClient, dictify_value, get_obj_name, get_obj_ref
+from . import VCenterClient, dictify_value, get_obj_name, get_obj_ref, settings
 from .settings import TABULAR_OUT, OUT_DIR
 
 
@@ -82,7 +82,7 @@ def dump_hosts(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Patte
     objs = vcenter.get_objs(vim.HostSystem, search, normalize=normalize, key=key)
     objs_count = len(objs)
 
-    with tabular_dumper(out, title='host', dir=dir or vcenter.data_dir, scope=vcenter.scope, headers=headers, after1970=True, truncate=True) as t:
+    with tabular_dumper(out, title='host', dir=dir or vcenter.data_dir, scope=vcenter.scope, headers=headers, after1970=True, truncate=True, excel=settings.CSV_EXCEL) as t:
         for i, obj in enumerate(objs):
             name = get_obj_name(obj)
             ref = get_obj_ref(obj)

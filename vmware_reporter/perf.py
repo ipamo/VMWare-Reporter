@@ -16,7 +16,7 @@ from tabulate import tabulate
 from zut import add_command, is_naive, make_aware, tabular_dumper, write_live
 
 from . import (VCenterClient, get_obj_name, get_obj_ref, get_obj_refprefix,
-               get_obj_typename)
+               get_obj_typename, settings)
 from .settings import TABULAR_OUT, OUT_DIR, COUNTERS
 
 _logger = logging.getLogger(__name__)
@@ -163,7 +163,7 @@ def dump_perf_intervals(vcenter: VCenterClient, out: os.PathLike|IOBase = TABULA
         'key', 'name', 'enabled', 'level', 'sampling_period'
     ]
 
-    with tabular_dumper(out, title='perf_interval', dir=dir or vcenter.data_dir, scope=vcenter.scope, headers=headers, truncate=True) as t:
+    with tabular_dumper(out, title='perf_interval', dir=dir or vcenter.data_dir, scope=vcenter.scope, headers=headers, truncate=True, excel=settings.CSV_EXCEL) as t:
         for interval in sorted(vcenter.perf_intervals_by_name.values(), key=lambda interval: interval.samplingPeriod):
             t.append([interval.key, interval.name, interval.enabled, interval.level, interval.samplingPeriod])
 
@@ -187,7 +187,7 @@ def dump_perf_counters(vcenter: VCenterClient, group: str = None, level: int = N
 
     pm = vcenter.service_content.perfManager
     
-    with tabular_dumper(out, title='perf_counter', dir=dir or vcenter.data_dir, scope=vcenter.scope, headers=headers, truncate=True) as t:
+    with tabular_dumper(out, title='perf_counter', dir=dir or vcenter.data_dir, scope=vcenter.scope, headers=headers, truncate=True, excel=settings.CSV_EXCEL) as t:
         for counter in sorted(pm.perfCounter, key=lambda counter: (counter.groupInfo.key, counter.nameInfo.key, counter.rollupType)):
             if group is not None and counter.groupInfo.key != group:
                 continue
@@ -228,7 +228,7 @@ def dump_perf_providers(vcenter: VCenterClient, search: list[str|re.Pattern]|str
     objs_count = len(objs)
     t0 = None
 
-    with tabular_dumper(out, title='perf_provider', dir=dir or vcenter.data_dir, scope=vcenter.scope, headers=headers, truncate=True) as table:
+    with tabular_dumper(out, title='perf_provider', dir=dir or vcenter.data_dir, scope=vcenter.scope, headers=headers, truncate=True, excel=settings.CSV_EXCEL) as table:
         for i, obj in enumerate(objs):
             name = get_obj_name(obj)
             ref = get_obj_ref(obj)
@@ -286,7 +286,7 @@ def dump_perf_metrics(vcenter: VCenterClient, search: list[str|re.Pattern]|str|r
     objs_count = len(objs)
     t0 = None
 
-    with tabular_dumper(out, title='perf_metric', dir=dir or vcenter.data_dir, scope=vcenter.scope, headers=headers, truncate=True) as table:
+    with tabular_dumper(out, title='perf_metric', dir=dir or vcenter.data_dir, scope=vcenter.scope, headers=headers, truncate=True, excel=settings.CSV_EXCEL) as table:
         for i, obj in enumerate(objs):
             if isinstance(obj, (vim.Folder, vim.Network)):
                 continue # No performance data for these types
@@ -761,7 +761,7 @@ class PerfHandler:
                         consolidate_counters.add(counter)
                         headers.append(f"{counter.groupInfo.key}.{counter.nameInfo.key}:max")
 
-                with tabular_dumper(out, title=title, dir=dir or self._vcenter.data_dir, scope=self._vcenter.scope, truncate=True) as table:
+                with tabular_dumper(out, title=title, dir=dir or self._vcenter.data_dir, scope=self._vcenter.scope, truncate=True, excel=settings.CSV_EXCEL) as table:
                     if counter_details:
                         preheaders_before_counters[0] = '(counter_key)'
                         row = preheaders_before_counters + [counter if isinstance(counter, int) else counter.key for counter in counters]

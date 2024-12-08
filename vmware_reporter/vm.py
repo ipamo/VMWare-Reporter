@@ -21,7 +21,7 @@ from zut import Header, add_command, gigi_bytes, tabular_dumper, slugify
 from zut.excel import ExcelRow, ExcelWorkbook, split_excel_path
 
 from . import (Tag, VCenterClient, dictify_obj,
-               dictify_value, get_obj_name, get_obj_path, get_obj_ref)
+               dictify_value, get_obj_name, get_obj_path, get_obj_ref, settings)
 from .settings import TABULAR_OUT, OUT_DIR, EXTRACT_TAG_CATEGORIES, EXTRACT_CUSTOM_VALUES
 from .pool import get_cached_pool_info
 
@@ -143,9 +143,8 @@ def dump_vms(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern
         'perf_realtime_refresh_rate',
         # Quick stats, see: https://developer.broadcom.com/xapis/virtual-infrastructure-json-api/latest/data-structures/VirtualMachineQuickStats/
         # Not available for templates and powered-off VMs
-        # TODO: verify 'cpu_ready_pct' is actually percentages
         'cpu_demand_mhz', # overallCpuDemand
-        'cpu_ready_pct', # overallCpuReadiness: Percentage of time that the virtual machine was ready, but could not get scheduled to run on the physical CPU.
+        'cpu_ready_pct', # overallCpuReadiness: Percentage of time that the virtual machine was ready, but could not get scheduled to run on the physical CPU. - TODO: verify 'cpu_ready_pct' is actually percentages
         'cpu_usage_mhz', # overallCpuUsage
         'cpu_entitled_mhz', # distributedCpuEntitlement = This is the amount of CPU resource, in MHz, that this VM is entitled to, as calculated by DRS.
         'cpu_static_entitlement_mhz', # staticCpuEntitlement = The static CPU resource entitlement for a virtual machine (doesn't take into account current usage = worst case allocation for this virtual machine, if all VMs went to maximum consumption).
@@ -168,7 +167,7 @@ def dump_vms(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pattern
 
     perf_manager = vcenter.service_content.perfManager
 
-    with tabular_dumper(out, title='vm', dir=dir or vcenter.data_dir, scope=vcenter.scope, headers=headers, after1970=True, truncate=True) as t:
+    with tabular_dumper(out, title='vm', dir=dir or vcenter.data_dir, scope=vcenter.scope, headers=headers, after1970=True, truncate=True, excel=settings.CSV_EXCEL) as t:
         for i, obj in enumerate(objs):
             name = get_obj_name(obj)
             ref = get_obj_ref(obj)
@@ -353,8 +352,8 @@ def dump_vm_disks(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pa
         Header('guests_freespace', fmt='gib'),
     ]
     
-    with (tabular_dumper(out, title='vm_disk', headers=disks_headers, dir=dir or vcenter.data_dir, scope=vcenter.scope, truncate=True) if detailed else nullcontext() as t_detailed,
-          tabular_dumper(out, title='vm_disk_per_vm', headers=disks_per_vm_headers, dir=dir or vcenter.data_dir, scope=vcenter.scope, truncate=True) if per_vm else nullcontext() as t_per_vm):
+    with (tabular_dumper(out, title='vm_disk', headers=disks_headers, dir=dir or vcenter.data_dir, scope=vcenter.scope, truncate=True, excel=settings.CSV_EXCEL) if detailed else nullcontext() as t_detailed,
+          tabular_dumper(out, title='vm_disk_per_vm', headers=disks_per_vm_headers, dir=dir or vcenter.data_dir, scope=vcenter.scope, truncate=True, excel=settings.CSV_EXCEL) if per_vm else nullcontext() as t_per_vm):
         
         for i, vm in enumerate(vcenter.iter_objs(vim.VirtualMachine, search, normalize=normalize, key=key)):
             try:
@@ -807,8 +806,8 @@ def dump_vm_nics(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Pat
         'guests_network_name',
     ]
     
-    with (tabular_dumper(out, title='vm_nic', headers=nics_headers, dir=dir or vcenter.data_dir, scope=vcenter.scope, truncate=True) if detailed else nullcontext() as t_detailed,
-          tabular_dumper(out, title='vm_nic_per_vm', headers=nics_per_vm_headers, dir=dir or vcenter.data_dir, scope=vcenter.scope, truncate=True) if per_vm else nullcontext() as t_per_vm):
+    with (tabular_dumper(out, title='vm_nic', headers=nics_headers, dir=dir or vcenter.data_dir, scope=vcenter.scope, truncate=True, excel=settings.CSV_EXCEL) if detailed else nullcontext() as t_detailed,
+          tabular_dumper(out, title='vm_nic_per_vm', headers=nics_per_vm_headers, dir=dir or vcenter.data_dir, scope=vcenter.scope, truncate=True, excel=settings.CSV_EXCEL) if per_vm else nullcontext() as t_per_vm):
         
         for i, vm in enumerate(vcenter.iter_objs(vim.VirtualMachine, search, normalize=normalize, key=key)):
             try:
@@ -1146,7 +1145,7 @@ def dump_vm_cdroms(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.P
         'target',
     ]
 
-    with tabular_dumper(out, title='vm_cdrom', headers=headers, dir=dir or vcenter.data_dir, scope=vcenter.scope, truncate=True) as t:
+    with tabular_dumper(out, title='vm_cdrom', headers=headers, dir=dir or vcenter.data_dir, scope=vcenter.scope, truncate=True, excel=settings.CSV_EXCEL) as t:
         for vm in vcenter.get_objs(vim.VirtualMachine, search, normalize=normalize, key=key):
             _logger.info(f"Analyze VM {vm.name} cdroms")
 

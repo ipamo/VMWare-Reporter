@@ -19,7 +19,7 @@ import requests
 from pyVmomi import vim
 from zut import (Header, add_command, tabular_dumper)
 
-from . import VCenterClient, get_obj_path, get_obj_ref
+from . import VCenterClient, get_obj_path, get_obj_ref, settings
 from .settings import TABULAR_OUT, OUT_DIR
 
 _logger = logging.getLogger(__name__)
@@ -90,7 +90,7 @@ def dump_datastores(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.
         'host_access',
     ]
 
-    with tabular_dumper(out, title='datastore', dir=dir or vcenter.data_dir, scope=vcenter.scope, headers=headers, truncate=True) as t:
+    with tabular_dumper(out, title='datastore', dir=dir or vcenter.data_dir, scope=vcenter.scope, headers=headers, truncate=True, excel=settings.CSV_EXCEL) as t:
         for obj in vcenter.iter_objs(vim.Datastore, search, normalize=normalize, key=key):            
             try:
                 _logger.info(f"Analyze datastore {obj.name}")
@@ -244,7 +244,7 @@ def dump_datastore_elements(vcenter: VCenterClient, search: list[str|re.Pattern]
     """
     Dump datastore elements (files and directories).
     """
-    with tabular_dumper(out, headers=DatastoreElement.get_headers(bytes=bytes), title="datastore_element", dir=dir or vcenter.data_dir, scope=vcenter.scope, truncate=True) as t:
+    with tabular_dumper(out, headers=DatastoreElement.get_headers(bytes=bytes), title="datastore_element", dir=dir or vcenter.data_dir, scope=vcenter.scope, truncate=True, excel=settings.CSV_EXCEL) as t:
         for obj in vcenter.get_objs(vim.Datastore, search, normalize=normalize, key=key, sort_key='name'):
             _logger.info(f'List datastore elements: {obj.name}')
         
@@ -271,7 +271,7 @@ def dump_datastore_stats(vcenter: VCenterClient, search: list[str|re.Pattern]|st
     """
     Dump datastore stats (total number and size of files and directories).
     """
-    with tabular_dumper(out, headers=DatastoreStat.get_headers(bytes=bytes), title="datastore_stat", dir=dir or vcenter.data_dir, scope=vcenter.scope, truncate=True) as t:
+    with tabular_dumper(out, headers=DatastoreStat.get_headers(bytes=bytes), title="datastore_stat", dir=dir or vcenter.data_dir, scope=vcenter.scope, truncate=True, excel=settings.CSV_EXCEL) as t:
         for obj in vcenter.get_objs(vim.Datastore, search, normalize=normalize, key=key, sort_key='name'):
             _logger.info(f'Analyze datastore stats: {obj.name}')
 

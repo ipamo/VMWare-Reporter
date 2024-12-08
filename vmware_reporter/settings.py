@@ -1,7 +1,7 @@
 import sys
 from configparser import RawConfigParser
 from dotenv import load_dotenv
-from zut import get_variable, get_list_variable
+from zut import get_variable, get_list_variable, get_bool_variable
 
 # Load system environment file
 load_dotenv('C:\\ProgramData\\vmware-reporter\\.env' if sys.platform == 'win32' else '/etc/vmware-reporter.env')
@@ -24,3 +24,5 @@ COUNTERS = get_list_variable('VMWARE_COUNTERS')
 
 EXTRACT_TAG_CATEGORIES = get_list_variable('VMWARE_EXTRACT_TAG_CATEGORIES')
 EXTRACT_CUSTOM_VALUES = get_list_variable('VMWARE_EXTRACT_CUSTOM_VALUES')
+
+CSV_EXCEL = get_bool_variable('CSV_EXCEL')
