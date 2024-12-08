@@ -1,4 +1,4 @@
-VMWare-reporter
+VMWare Reporter
 ===============
 
 Interact easily with your VMWare clusters.
@@ -6,7 +6,7 @@ Interact easily with your VMWare clusters.
 
 ## Installation
 
-VMWare-reporter package is published [on PyPI](https://pypi.org/project/vmware-reporter/):
+VMWare Reporter package is published [on PyPI](https://pypi.org/project/vmware-reporter/):
 
 ```sh
 pip install vmware-reporter
@@ -20,7 +20,7 @@ pip install vmware-reporter[excel]
 
 ## Configuration
 
-Create file `C:\ProgramData\vmware-reporter\.env` (`/etc/vmware-reporter.env` on Linux).
+Create file `C:\ProgramData\vmware-reporter\.env` (`/etc/vmware-reporter/.env` on Linux).
 
 Example:
 
@@ -50,7 +50,7 @@ VMWARE_SCOPE2_PASSWORD = ...
 
 See also [full documentation](https://ipamo.net/vmware-reporter) (including [API reference](https://ipamo.net/vmware-reporter/latest/api-reference.html)).
 
-VMWare-reporter may be used as a library in your Python code:
+VMWare Reporter may be used as a library in your Python code:
 
 ```py
 from vmware_reporter import VCenterClient
@@ -59,7 +59,7 @@ with VCenterClient() as vcenter:
         print(vm.name)
 ```
 
-VMWare-reporter may also be invoked as a command-line application (the `vmware-reporter` executable is installed with the package). Examples:
+VMWare Reporter may also be invoked as a command-line application (the `vmware-reporter` executable is installed with the package). Examples:
 
 - Export inventory of VMWare managed objects to a YAML file:
 
