@@ -29,7 +29,7 @@ def handle(vcenter: VCenterClient, out: os.PathLike|IOBase = OUT, dir: os.PathLi
         path, _ = split_excel_path(out, dir=dir or vcenter.data_dir, scope=vcenter.scope, title='__title__')
         files.archivate(path, ARCHIVATE, missing_ok=True, keep=True)
 
-    dump_vms_all(vcenter, out=out, dir=dir)
+    dump_vms_all(vcenter, per_vm=True, out=out, dir=dir)
     dump_hosts(vcenter, out=out, dir=dir)
     dump_nets(vcenter, out=out, dir=dir)
     dump_datastores_all(vcenter, out=out, dir=dir)

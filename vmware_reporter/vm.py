@@ -55,13 +55,13 @@ def _add_arguments(parser: ArgumentParser):
     parser.add_argument('-o', '--out', default=TABULAR_OUT, help="Output table (default: %(default)s).")
     parser.add_argument('--dir', help=f"Output directory (default: {OUT_DIR}).")
 
-def dump_vms_all(vcenter: VCenterClient, **kwargs):
+def dump_vms_all(vcenter: VCenterClient, *, per_vm = False, **kwargs):
     """
     Dump VMs with associated objects (VM disks and VM nics).
     """
     dump_vms(vcenter, **kwargs)
-    dump_vm_disks(vcenter, **kwargs)
-    dump_vm_nics(vcenter, **kwargs)
+    dump_vm_disks(vcenter, per_vm=per_vm, **kwargs)
+    dump_vm_nics(vcenter, per_vm=per_vm, **kwargs)
     dump_vm_cdroms(vcenter, **kwargs)
 
 dump_vms_all.add_arguments = _add_arguments
