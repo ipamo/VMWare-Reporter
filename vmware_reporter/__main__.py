@@ -12,7 +12,7 @@ from types import FunctionType
 from zut import add_command, configure_logging, exec_command, get_help_text
 
 from . import (VCenterClient, __prog__, __version__, cluster,
-               customvalue, datastore, all, host, net, perf, pool, tag, vm, settings)
+               customvalue, datastore, host, net, perf, pool, report, tag, vm, settings)
 from .export import export
 from .inventory import inventory
 
@@ -43,7 +43,7 @@ def init_parser(prog: str = None, version: str = None, doc: str = None):
 
 
 def add_commands(subparsers: _SubParsersAction[ArgumentParser]):
-    add_command(subparsers, all)
+    add_command(subparsers, report)
 
     add_command(subparsers, cluster)
     add_command(subparsers, pool)

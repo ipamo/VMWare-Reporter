@@ -16,7 +16,7 @@ from pyVmomi import vim
 from tabulate import tabulate
 from zut import add_command, tabular_dumper, write_live
 
-from . import VCenterClient, dictify_value, get_obj_name, get_obj_ref, settings
+from . import VCenterClient, dictify_value, get_obj_name, get_obj_ref, get_obj_typename, settings
 from .settings import TABULAR_OUT, OUT_DIR
 
 
@@ -105,7 +105,7 @@ def dump_hosts(vcenter: VCenterClient, search: list[str|re.Pattern]|str|re.Patte
                     hardware.numCpuCores,
                     hardware.cpuMhz,
                     int(hardware.memorySize / 1024**2),
-                    obj.parent.name if obj.parent and isinstance(obj, vim.ClusterComputeResource) else None,
+                    obj.parent.name if obj.parent and get_obj_typename(obj.parent) == 'ClusterComputeResource' else None,
                     runtime.dasHostState.state if runtime.dasHostState else None,                                        
                     runtime.powerState,
                     runtime.standbyMode,
