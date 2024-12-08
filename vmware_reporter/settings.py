@@ -1,13 +1,8 @@
-import sys
 from configparser import RawConfigParser
-from dotenv import load_dotenv
 from zut import get_variable, get_list_variable, get_bool_variable
+from .utils import load_dotenvs
 
-# Load system environment file
-load_dotenv('C:\\ProgramData\\vmware-reporter\\.env' if sys.platform == 'win32' else '/etc/vmware-reporter.env')
-
-# Load local environment file (defaults to .env in the current working directory or its parents)
-load_dotenv(override=True)
+load_dotenvs('vmware-reporter')
 
 # Define global configuration directives
 OUT_DIR = get_variable('VMWARE_OUT_DIR', 'data/{scope}')
