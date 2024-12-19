@@ -1,4 +1,3 @@
-zut[default] == 1.1.3
-python-dotenv
+zut[default] >= 1.1.5
 pyvmomi
 requests
